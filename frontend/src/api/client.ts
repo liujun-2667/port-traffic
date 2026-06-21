@@ -26,8 +26,23 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
     ...init
   })
   if (!res.ok) {
-    const txt = await res.text().catch(() => res.statusText)
-    throw new Error(`${res.status} ${txt}`)
+    const txt = await res.text().catch(() => '')
+    let msg = ''
+    try {
+      const j = JSON.parse(txt)
+      msg =
+        j?.error ||
+        j?.message ||
+        j?.msg ||
+        (typeof j?.detail === 'string' ? j.detail : '')
+    } catch {
+      msg = txt.trim()
+    }
+    if (!msg) msg = res.statusText
+    const err: Error & { status?: number; raw?: string } = new Error(msg)
+    err.status = res.status
+    err.raw = txt
+    throw err
   }
   if (res.status === 204) return undefined as T
   return (await res.json()) as T

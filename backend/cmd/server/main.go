@@ -35,10 +35,12 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	if s, err := store.New(ctx, dsn); err == nil {
 		cancel()
+		// 先赋值 st，再 Migrate——即使 Migrate 失败，pool 依然可用
+		// dredging 模块需要 pool 来执行自己独立的 schema
+		st = s
 		if err := s.Migrate(); err != nil {
-			log.Printf("store migrate: %v (persistence disabled)", err)
+			log.Printf("store migrate: %v (sim persistence may be limited)", err)
 		} else {
-			st = s
 			log.Printf("store: connected, schema migrated")
 		}
 	} else {

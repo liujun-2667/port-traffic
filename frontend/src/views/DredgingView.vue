@@ -15,7 +15,6 @@ const batches = ref<DredgingBatch[]>([])
 const loading = ref(false)
 const error = ref('')
 
-// ---- Batch form state ----
 const selectedIds = ref<string[]>([])
 const batchName = ref('')
 const startDate = ref(new Date().toISOString().slice(0, 10))
@@ -25,7 +24,6 @@ const notes = ref('')
 const costPreview = ref<CostPreview | null>(null)
 const saving = ref(false)
 
-// ---- Optimizer state ----
 const budget = ref<number>(5000)
 const optimizeResult = ref<OptimizeResult | null>(null)
 const optimizing = ref(false)
@@ -42,6 +40,42 @@ const BATCH_STATUS_LABEL: Record<BatchStatus, { label: string; cls: string }> = 
   completed: { label: '已完成', cls: 'bg-slate-500/30 text-slate-300 border-slate-400/40' }
 }
 
+// ---- Friendly error mapping ----
+function friendlyError(e: any, fallback: string): string {
+  const status: number | undefined = e?.status
+  const raw: string | undefined = e?.raw
+  const msg: string = (e?.message ?? '').toString().trim()
+
+  // 简短/可读的后端 message 直接用
+  if (msg && msg.length <= 60 && !msg.startsWith('{') && !msg.includes('SQLSTATE') && !msg.includes('ERROR:')) {
+    return msg
+  }
+  switch (status) {
+    case 400:
+    case 422:
+      return '请求参数错误，请检查输入后重试'
+    case 401:
+    case 403:
+      return '没有操作权限，请重新登录或联系管理员'
+    case 404:
+      return '请求的资源不存在，可能已被删除'
+    case 409:
+      return '操作冲突，请刷新数据后重试'
+    case 500:
+    case 502:
+    case 503:
+      return '服务器错误，请稍后再试；若持续出现请联系技术支持'
+  }
+  // 未识别的网络错误 / 未提供 status
+  if (raw && (raw.includes('SQLSTATE') || raw.includes('ERROR:'))) {
+    return '服务器数据操作异常，请稍后再试或联系技术支持'
+  }
+  if (!status && typeof window !== 'undefined' && typeof fetch === 'function' && !navigator.onLine) {
+    return '网络连接已断开，请检查网络后重试'
+  }
+  return fallback || '请求失败，请重试'
+}
+
 async function loadAll() {
   loading.value = true
   error.value = ''
@@ -50,7 +84,7 @@ async function loadAll() {
     channels.value = ch
     batches.value = ba
   } catch (e: any) {
-    error.value = e.message || '加载失败'
+    error.value = friendlyError(e, '加载航道维护数据失败，请刷新页面重试')
   } finally {
     loading.value = false
   }
@@ -79,8 +113,9 @@ async function refreshPreview() {
   }
   try {
     costPreview.value = await api.costPreview(selectedIds.value, targetDepth.value)
-  } catch {
+  } catch (e: any) {
     costPreview.value = null
+    error.value = friendlyError(e, '成本预览失败，请检查目标水深设置是否合理')
   }
 }
 
@@ -112,47 +147,51 @@ async function createBatch() {
     costPreview.value = null
     await loadAll()
   } catch (e: any) {
-    error.value = e.message || '创建失败'
+    error.value = friendlyError(e, '创建疏浚批次失败，请稍后再试')
   } finally {
     saving.value = false
   }
 }
 
 async function startBatch(id: number) {
+  error.value = ''
   try {
     await api.startBatch(id)
     await loadAll()
   } catch (e: any) {
-    error.value = e.message
+    error.value = friendlyError(e, '启动批次失败，请稍后再试')
   }
 }
 
 async function completeBatch(id: number) {
+  error.value = ''
   try {
     await api.completeBatch(id)
     await loadAll()
   } catch (e: any) {
-    error.value = e.message
+    error.value = friendlyError(e, '完成批次失败，请稍后再试')
   }
 }
 
 async function delBatch(id: number) {
-  if (!confirm('确定删除此疏浚批次?')) return
+  if (!confirm('确定删除此疏浚批次？')) return
+  error.value = ''
   try {
     await api.deleteBatch(id)
     await loadAll()
   } catch (e: any) {
-    error.value = e.message
+    error.value = friendlyError(e, '删除批次失败，请稍后再试')
   }
 }
 
 async function runOptimize() {
   if (budget.value <= 0) return
   optimizing.value = true
+  error.value = ''
   try {
     optimizeResult.value = await api.optimize(budget.value)
   } catch (e: any) {
-    error.value = e.message
+    error.value = friendlyError(e, '优化建议计算失败，请稍后再试')
   } finally {
     optimizing.value = false
   }
@@ -164,6 +203,10 @@ function fmtDate(s: string) {
   if (!s) return '—'
   const d = new Date(s)
   return d.toLocaleDateString('zh-CN')
+}
+
+function dismissError() {
+  error.value = ''
 }
 
 onMounted(() => {
@@ -184,8 +227,21 @@ onMounted(() => {
       >刷新数据</button>
     </div>
 
-    <div v-if="error" class="rounded-md border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-xs text-rose-300">
-      {{ error }}
+    <div
+      v-if="error"
+      class="flex items-start justify-between gap-3 rounded-md border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-xs text-rose-200"
+    >
+      <div class="flex items-start gap-2">
+        <span class="mt-0.5 text-base leading-none text-rose-400">⚠</span>
+        <div>
+          <div class="font-medium text-rose-200">操作失败</div>
+          <div class="mt-0.5 text-rose-300/90">{{ error }}</div>
+        </div>
+      </div>
+      <button
+        class="rounded px-1.5 py-0.5 text-slate-400 hover:bg-rose-500/10 hover:text-rose-200"
+        @click="dismissError"
+      >×</button>
     </div>
 
     <div class="grid min-h-0 flex-1 grid-cols-12 gap-3">
@@ -245,7 +301,10 @@ onMounted(() => {
                   </span>
                 </td>
               </tr>
-              <tr v-if="channels.length === 0 && !loading">
+              <tr v-if="loading && channels.length === 0">
+                <td colspan="7" class="px-4 py-10 text-center text-slate-500">正在加载航道状态...</td>
+              </tr>
+              <tr v-else-if="channels.length === 0">
                 <td colspan="7" class="px-4 py-10 text-center text-slate-500">暂无数据</td>
               </tr>
             </tbody>
@@ -308,7 +367,6 @@ onMounted(() => {
             </div>
           </div>
 
-          <!-- Cost preview -->
           <div v-if="costPreview" class="border-t border-slate-700/50 bg-navy-900/40 px-3 py-2">
             <div class="mb-2 flex items-end justify-between">
               <div class="text-xs text-slate-400">成本预览</div>
