@@ -199,15 +199,15 @@ export interface Frame {
   clock: string
   done: boolean
   ships: Ship[]
-  segmentCongestion: SegCong[]
-  encounters: Encounter[]
+  segmentCongestion: SegCong[] | null
+  encounters: Encounter[] | null
   kpi: KPI
-  throughput: ThroughputPoint[]
+  throughput: ThroughputPoint[] | null
   tideLevel: number
   navigableDepth: number
   berths: BerthState[]
   anchorage: AnchorageState
-  events: TimelineEvent[]
+  events: TimelineEvent[] | null
   strategy: StrategyConfig
 }
 

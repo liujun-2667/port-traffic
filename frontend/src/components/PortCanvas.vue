@@ -103,7 +103,7 @@ function draw() {
   if (!cfg) return
   const t = makeTransform(cfg, w, h)
   const segCong = new Map<string, boolean>()
-  if (props.frame) for (const sc of props.frame.segmentCongestion) segCong.set(sc.segId, sc.congested)
+  if (props.frame) for (const sc of props.frame.segmentCongestion ?? []) segCong.set(sc.segId, sc.congested)
 
   for (const z of cfg.port.encounterZones) {
     const { px, py } = toPx(t, z.position.x, z.position.y)
@@ -225,7 +225,7 @@ function draw() {
     }
 
     const flashOn = Math.sin(flashPhase) > 0
-    for (const enc of props.frame.encounters) {
+    for (const enc of props.frame.encounters ?? []) {
       if (!enc.dangerous) continue
       const sa = props.frame.ships.find((s) => s.id === enc.shipA)
       const sb = props.frame.ships.find((s) => s.id === enc.shipB)

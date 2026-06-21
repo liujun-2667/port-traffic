@@ -30,9 +30,12 @@ func (e *Engine) Frame() Frame {
 	if len(e.port.Anchorages) > 0 {
 		anc = AnchorageState{ID: e.port.Anchorages[0].ID, Count: e.anchorageCount, Capacity: e.anchorageCap}
 	}
-	segCong := append([]SegCong(nil), e.curSegCong...)
-	encs := append([]safety.Encounter(nil), e.curEncounters...)
-	thru := append([]ThroughputPoint(nil), e.throughput...)
+	segCong := make([]SegCong, 0, len(e.curSegCong))
+	segCong = append(segCong, e.curSegCong...)
+	encs := make([]safety.Encounter, 0, len(e.curEncounters))
+	encs = append(encs, e.curEncounters...)
+	thru := make([]ThroughputPoint, 0, len(e.throughput))
+	thru = append(thru, e.throughput...)
 
 	depth := 0.0
 	if seg, ok := e.port.SegmentByID("S1"); ok {
@@ -45,7 +48,10 @@ func (e *Engine) Frame() Frame {
 		KPI: e.kpiLocked(), Throughput: thru,
 		TideLevel: e.tide.Level(e.hours()), NavigableDepth: depth,
 		Berths: berths, Anchorage: anc,
-		Events: append([]TimelineEvent(nil), e.recentEvents...),
+		Events: func() []TimelineEvent {
+			out := make([]TimelineEvent, 0, len(e.recentEvents))
+			return append(out, e.recentEvents...)
+		}(),
 		Strategy: e.strategy,
 	}
 }
