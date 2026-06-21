@@ -50,6 +50,7 @@ type Frame struct {
 	Anchorage         AnchorageState       `json:"anchorage"`
 	Events            []TimelineEvent      `json:"events"`
 	Strategy          StrategyConfig       `json:"strategy"`
+	ClosedSegments    []string             `json:"closedSegments"`
 }
 
 // BerthState is a berth occupancy snapshot.

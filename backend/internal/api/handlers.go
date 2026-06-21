@@ -7,11 +7,13 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/cors"
 
 	"port-traffic/internal/config"
+	"port-traffic/internal/dredging"
 	"port-traffic/internal/sensitivity"
 	"port-traffic/internal/sim"
 	"port-traffic/internal/store"
@@ -20,15 +22,16 @@ import (
 
 // Server wires dependencies and routes.
 type Server struct {
-	cfg  *config.Service
-	mgr  *Manager
-	st   store.Store
-	sens *sensitivity.Runner
+	cfg     *config.Service
+	mgr     *Manager
+	st      store.Store
+	sens    *sensitivity.Runner
+	dredge  *dredging.Service
 }
 
 // NewServer constructs the API server.
-func NewServer(cfg *config.Service, mgr *Manager, st store.Store, sens *sensitivity.Runner) *Server {
-	return &Server{cfg: cfg, mgr: mgr, st: st, sens: sens}
+func NewServer(cfg *config.Service, mgr *Manager, st store.Store, sens *sensitivity.Runner, dr *dredging.Service) *Server {
+	return &Server{cfg: cfg, mgr: mgr, st: st, sens: sens, dredge: dr}
 }
 
 // Router builds the chi router with all routes.
@@ -57,6 +60,19 @@ func (s *Server) Router() http.Handler {
 	r.Get("/api/runs/{runId}/trajectory", s.getTrajectory)
 	r.Get("/api/runs/{runId}/report", s.getReport)
 	r.Get("/api/sim/{runId}/ship/{shipId}", s.getShipDetail)
+
+	// Dredging module routes
+	r.Get("/api/dredging/channels", s.listChannels)
+	r.Get("/api/dredging/channels/{segmentId}", s.getSediment)
+	r.Put("/api/dredging/channels/{segmentId}", s.updateSediment)
+	r.Post("/api/dredging/cost-preview", s.costPreview)
+	r.Post("/api/dredging/batches", s.createBatch)
+	r.Get("/api/dredging/batches", s.listBatches)
+	r.Get("/api/dredging/batches/{batchId}", s.getBatch)
+	r.Post("/api/dredging/batches/{batchId}/start", s.startBatch)
+	r.Post("/api/dredging/batches/{batchId}/complete", s.completeBatch)
+	r.Delete("/api/dredging/batches/{batchId}", s.deleteBatch)
+	r.Post("/api/dredging/optimize", s.optimize)
 	return r
 }
 
@@ -386,4 +402,236 @@ func (s *Server) getShipDetail(w http.ResponseWriter, r *http.Request) {
 
 func writeError(w http.ResponseWriter, status int, err error) {
 	writeJSON(w, status, map[string]string{"error": err.Error()})
+}
+
+// ---------- Dredging module handlers ----------
+
+func (s *Server) listChannels(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	asOf := time.Now()
+	if v := r.URL.Query().Get("date"); v != "" {
+		if t, err := time.Parse(time.RFC3339, v); err == nil {
+			asOf = t
+		}
+	}
+	if s.dredge == nil {
+		writeJSON(w, http.StatusOK, []any{})
+		return
+	}
+	out, err := s.dredge.ListChannelStatuses(ctx, asOf)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *Server) getSediment(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	sid := chi.URLParam(r, "segmentId")
+	if sid == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("missing segmentId"))
+		return
+	}
+	if s.dredge == nil {
+		writeError(w, http.StatusServiceUnavailable, fmt.Errorf("dredging service unavailable"))
+		return
+	}
+	out, err := s.dredge.GetSediment(ctx, sid)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if out == nil {
+		writeError(w, http.StatusNotFound, fmt.Errorf("segment not found"))
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *Server) updateSediment(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	sid := chi.URLParam(r, "segmentId")
+	if sid == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("missing segmentId"))
+		return
+	}
+	var req dredging.UpdateSedimentRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if s.dredge == nil {
+		writeError(w, http.StatusServiceUnavailable, fmt.Errorf("dredging service unavailable"))
+		return
+	}
+	out, err := s.dredge.UpdateSediment(ctx, sid, &req)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if out == nil {
+		writeError(w, http.StatusNotFound, fmt.Errorf("segment not found"))
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+type costPreviewReq struct {
+	SegmentIDs  []string `json:"segmentIds"`
+	TargetDepth float64  `json:"targetDepth"`
+}
+
+func (s *Server) costPreview(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	var req costPreviewReq
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if s.dredge == nil {
+		writeError(w, http.StatusServiceUnavailable, fmt.Errorf("dredging service unavailable"))
+		return
+	}
+	out, err := s.dredge.ComputeCostPreview(ctx, req.SegmentIDs, req.TargetDepth)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *Server) createBatch(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	var req dredging.CreateBatchRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if s.dredge == nil {
+		writeError(w, http.StatusServiceUnavailable, fmt.Errorf("dredging service unavailable"))
+		return
+	}
+	b, err := s.dredge.CreateBatch(ctx, &req)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, b)
+}
+
+func (s *Server) listBatches(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	if s.dredge == nil {
+		writeJSON(w, http.StatusOK, []any{})
+		return
+	}
+	out, err := s.dredge.ListBatches(ctx)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *Server) getBatch(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	id, ok := batchID(w, r)
+	if !ok {
+		return
+	}
+	if s.dredge == nil {
+		writeError(w, http.StatusServiceUnavailable, fmt.Errorf("dredging service unavailable"))
+		return
+	}
+	b, err := s.dredge.GetBatch(ctx, id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if b == nil {
+		writeError(w, http.StatusNotFound, fmt.Errorf("batch not found"))
+		return
+	}
+	writeJSON(w, http.StatusOK, b)
+}
+
+func (s *Server) startBatch(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	id, ok := batchID(w, r)
+	if !ok {
+		return
+	}
+	if s.dredge == nil {
+		writeError(w, http.StatusServiceUnavailable, fmt.Errorf("dredging service unavailable"))
+		return
+	}
+	if err := s.dredge.StartBatch(ctx, id); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) completeBatch(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	id, ok := batchID(w, r)
+	if !ok {
+		return
+	}
+	if s.dredge == nil {
+		writeError(w, http.StatusServiceUnavailable, fmt.Errorf("dredging service unavailable"))
+		return
+	}
+	if err := s.dredge.CompleteBatch(ctx, id); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) deleteBatch(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	id, ok := batchID(w, r)
+	if !ok {
+		return
+	}
+	if s.dredge == nil {
+		writeError(w, http.StatusServiceUnavailable, fmt.Errorf("dredging service unavailable"))
+		return
+	}
+	if err := s.dredge.DeleteBatch(ctx, id); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) optimize(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	var req dredging.OptimizeRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if s.dredge == nil {
+		writeError(w, http.StatusServiceUnavailable, fmt.Errorf("dredging service unavailable"))
+		return
+	}
+	out, err := s.dredge.Optimize(ctx, req.AnnualBudget)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func batchID(w http.ResponseWriter, r *http.Request) (int64, bool) {
+	v := chi.URLParam(r, "batchId")
+	id, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64)
+	if err != nil || id <= 0 {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid batchId"))
+		return 0, false
+	}
+	return id, true
 }

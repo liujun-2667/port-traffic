@@ -1,14 +1,21 @@
 import type {
   AppConfig,
+  ChannelSediment,
+  ChannelStatus,
+  CostPreview,
+  CreateBatchRequest,
+  DredgingBatch,
   DualResult,
   Frame,
+  OptimizeResult,
   Report,
   RunMeta,
   RunParams,
   ShipDetail,
   SinglePoint,
   TideResponse,
-  TrajectoryRow
+  TrajectoryRow,
+  UpdateSedimentRequest
 } from './types'
 
 const BASE = '/api'
@@ -68,7 +75,43 @@ export const api = {
     metric: string
   }) => req<DualResult>('/sensitivity/dual', { method: 'POST', body: JSON.stringify(b) }),
   getShipDetail: (runId: number, shipId: string) =>
-    req<ShipDetail>(`/sim/${runId}/ship/${encodeURIComponent(shipId)}`)
+    req<ShipDetail>(`/sim/${runId}/ship/${encodeURIComponent(shipId)}`),
+
+  // Dredging module
+  listChannels: (date?: string) => {
+    const qs = date ? `?date=${encodeURIComponent(date)}` : ''
+    return req<ChannelStatus[]>(`/dredging/channels${qs}`)
+  },
+  getSediment: (segmentId: string) =>
+    req<ChannelSediment>(`/dredging/channels/${encodeURIComponent(segmentId)}`),
+  updateSediment: (segmentId: string, body: UpdateSedimentRequest) =>
+    req<ChannelSediment>(`/dredging/channels/${encodeURIComponent(segmentId)}`, {
+      method: 'PUT',
+      body: JSON.stringify(body)
+    }),
+  costPreview: (segmentIds: string[], targetDepth: number) =>
+    req<CostPreview>('/dredging/cost-preview', {
+      method: 'POST',
+      body: JSON.stringify({ segmentIds, targetDepth })
+    }),
+  createBatch: (body: CreateBatchRequest) =>
+    req<DredgingBatch>('/dredging/batches', {
+      method: 'POST',
+      body: JSON.stringify(body)
+    }),
+  listBatches: () => req<DredgingBatch[]>('/dredging/batches'),
+  getBatch: (batchId: number) => req<DredgingBatch>(`/dredging/batches/${batchId}`),
+  startBatch: (batchId: number) =>
+    req<{ ok: boolean }>(`/dredging/batches/${batchId}/start`, { method: 'POST' }),
+  completeBatch: (batchId: number) =>
+    req<{ ok: boolean }>(`/dredging/batches/${batchId}/complete`, { method: 'POST' }),
+  deleteBatch: (batchId: number) =>
+    req<{ ok: boolean }>(`/dredging/batches/${batchId}`, { method: 'DELETE' }),
+  optimize: (annualBudget: number) =>
+    req<OptimizeResult>('/dredging/optimize', {
+      method: 'POST',
+      body: JSON.stringify({ annualBudget })
+    })
 }
 
 // Subscribe to the SSE frame stream for a run. Returns an unsubscribe function.

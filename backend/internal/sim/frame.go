@@ -42,6 +42,11 @@ func (e *Engine) Frame() Frame {
 		depth = e.tide.NavigableDepth(seg.BaseDepth, e.hours())
 	}
 
+	closedSegs := make([]string, 0, len(e.closedSegments))
+	for id := range e.closedSegments {
+		closedSegs = append(closedSegs, id)
+	}
+
 	return Frame{
 		Minute: e.minute, Clock: clock(e.minute), Done: e.done,
 		Ships: ships, SegmentCongestion: segCong, Encounters: encs,
@@ -52,7 +57,8 @@ func (e *Engine) Frame() Frame {
 			out := make([]TimelineEvent, 0, len(e.recentEvents))
 			return append(out, e.recentEvents...)
 		}(),
-		Strategy: e.strategy,
+		Strategy:       e.strategy,
+		ClosedSegments: closedSegs,
 	}
 }
 

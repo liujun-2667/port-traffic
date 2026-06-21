@@ -57,7 +57,9 @@ func (e *Engine) advice(segCong []SegCongAvg) []Advice {
 	avgWait, _ := waitStats(e.waitTimes)
 	maxPeak := 0.0
 	var peakSeg string
+	congByID := map[string]SegCongAvg{}
 	for _, sc := range segCong {
+		congByID[sc.SegID] = sc
 		if sc.PeakCongestion > maxPeak {
 			maxPeak = sc.PeakCongestion
 			peakSeg = sc.SegID
@@ -66,6 +68,47 @@ func (e *Engine) advice(segCong []SegCongAvg) []Advice {
 	if maxPeak > 0.7 {
 		out = append(out, Advice{Code: "WIDEN", Text: "航段 " + peakSeg + " 峰值拥堵达 " + pct(maxPeak) + ",建议优先扩容或增设支航道"})
 	}
+
+	// Dredging-closure conflict detection
+	if len(e.closedSegments) > 0 {
+		// For each closed segment, check if any *adjacent* (route-sharing) non-closed segment has peak congestion > 0.8
+		closedSet := map[string]bool{}
+		for id := range e.closedSegments {
+			closedSet[id] = true
+		}
+		for closedID := range closedSet {
+			// Adjacency heuristic: segments that appear together in the default in/out routes
+			neighbors := map[string]bool{}
+			for _, b := range e.port.Berths {
+				inR := []string{"S1", "S2", "S3", b.BranchSeg}
+				containsClosed := false
+				for _, id := range inR {
+					if id == closedID {
+						containsClosed = true
+						break
+					}
+				}
+				if containsClosed {
+					for _, id := range inR {
+						if !closedSet[id] && id != closedID {
+							neighbors[id] = true
+						}
+					}
+				}
+			}
+			for nb := range neighbors {
+				if sc, ok := congByID[nb]; ok && sc.PeakCongestion > 0.8 {
+					out = append(out, Advice{
+						Code: "DREDGE_TIMING",
+						Text: fmt.Sprintf("航段 %s 因疏浚封闭导致相邻航段 %s 拥堵度达 %s,疏浚工期与通行高峰冲突,建议调整疏浚时间窗口",
+							closedID, nb, pct(sc.PeakCongestion)),
+					})
+					break
+				}
+			}
+		}
+	}
+
 	if e.cfg.Sim.ArrivalRate >= 4 && avgWait > 30 {
 		out = append(out, Advice{Code: "TIDE_WINDOW", Text: "到达率较高且平均等待偏长,建议启用潮汐窗口调度,利用高潮位集中放行深吃水船舶"})
 	}

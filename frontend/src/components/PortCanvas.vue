@@ -119,6 +119,7 @@ function draw() {
     ctx.fillText(z.id, px + 4, py - 4)
   }
 
+  const closedSegs = new Set<string>(props.frame?.closedSegments ?? [])
   for (const seg of cfg.port.segments) {
     const a = toPx(t, seg.from.x, seg.from.y)
     const b = toPx(t, seg.to.x, seg.to.y)
@@ -128,6 +129,7 @@ function draw() {
     const len = Math.hypot(dx, dy) || 1
     const nx = -dy / len
     const ny = dx / len
+    const isClosed = closedSegs.has(seg.id)
     ctx.beginPath()
     ctx.moveTo(a.px + nx * halfW, a.py + ny * halfW)
     ctx.lineTo(b.px + nx * halfW, b.py + ny * halfW)
@@ -140,9 +142,57 @@ function draw() {
     ctx.strokeStyle = congested ? 'rgba(255,181,71,0.7)' : 'rgba(59,130,246,0.5)'
     ctx.lineWidth = 1
     ctx.stroke()
+
+    if (isClosed) {
+      ctx.save()
+      ctx.beginPath()
+      ctx.moveTo(a.px + nx * halfW, a.py + ny * halfW)
+      ctx.lineTo(b.px + nx * halfW, b.py + ny * halfW)
+      ctx.lineTo(b.px - nx * halfW, b.py - ny * halfW)
+      ctx.lineTo(a.px - nx * halfW, a.py - ny * halfW)
+      ctx.closePath()
+      ctx.clip()
+      const stripeW = 8
+      const stripeCount = Math.ceil((Math.abs(dx) + Math.abs(dy)) / stripeW) + 4
+      for (let i = -stripeCount; i < stripeCount * 2; i++) {
+        const x0 = a.px - stripeW * 2 + i * stripeW
+        const y0 = a.py - stripeW * 4
+        const x1 = x0 + stripeW
+        const y1 = y0 + stripeW * 2
+        ctx.beginPath()
+        ctx.moveTo(x0, y0)
+        ctx.lineTo(x1, y1)
+        ctx.lineTo(x1 + stripeW, y1)
+        ctx.lineTo(x0 + stripeW, y0)
+        ctx.closePath()
+        ctx.fillStyle = i % 2 === 0 ? 'rgba(255,220,0,0.72)' : 'rgba(0,0,0,0.72)'
+        ctx.fill()
+      }
+      ctx.restore()
+
+      const cx = (a.px + b.px) / 2
+      const cy = (a.py + b.py) / 2
+      ctx.save()
+      ctx.translate(cx, cy)
+      const iconR = Math.min(18, halfW * 0.8)
+      ctx.beginPath()
+      ctx.arc(0, 0, iconR, 0, Math.PI * 2)
+      ctx.fillStyle = 'rgba(15,23,42,0.9)'
+      ctx.fill()
+      ctx.strokeStyle = '#fde047'
+      ctx.lineWidth = 2
+      ctx.stroke()
+      ctx.font = `${iconR}px serif`
+      ctx.textAlign = 'center'
+      ctx.textBaseline = 'middle'
+      ctx.fillStyle = '#fde047'
+      ctx.fillText('⚒', 0, 1)
+      ctx.restore()
+    }
+
     const mx = (a.px + b.px) / 2
     const my = (a.py + b.py) / 2
-    ctx.fillStyle = 'rgba(148,163,184,0.7)'
+    ctx.fillStyle = isClosed ? '#fde047' : 'rgba(148,163,184,0.7)'
     ctx.font = '9px ui-monospace, monospace'
     ctx.fillText(seg.id, mx - 6, my - halfW - 4)
   }
@@ -272,6 +322,28 @@ function drawLegend(c: CanvasRenderingContext2D, w: number, h: number) {
   c.fillRect(x, y - 8, 10, 10)
   c.fillStyle = '#cbd5e1'
   c.fillText('危险会遇', x + 14, y)
+  x += 80
+  c.save()
+  c.beginPath()
+  c.rect(x, y - 8, 24, 10)
+  c.clip()
+  for (let i = 0; i < 8; i++) {
+    const x0 = x - 4 + i * 6
+    const y0 = y - 12
+    c.fillStyle = i % 2 === 0 ? '#fde047' : '#000000'
+    c.beginPath()
+    c.moveTo(x0, y0)
+    c.lineTo(x0 + 6, y0 + 12)
+    c.lineTo(x0 + 12, y0 + 12)
+    c.lineTo(x0 + 6, y0)
+    c.closePath()
+    c.fill()
+  }
+  c.restore()
+  c.strokeStyle = '#fde047'
+  c.strokeRect(x, y - 8, 24, 10)
+  c.fillStyle = '#cbd5e1'
+  c.fillText('航道封闭施工', x + 30, y)
 }
 
 function pickShip(clientX: number, clientY: number): Ship | null {

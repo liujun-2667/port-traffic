@@ -10,8 +10,11 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"port-traffic/internal/api"
 	"port-traffic/internal/config"
+	"port-traffic/internal/dredging"
 	"port-traffic/internal/sensitivity"
 	"port-traffic/internal/store"
 )
@@ -28,6 +31,7 @@ func main() {
 	defer cfgSvc.Close()
 
 	var st store.Store
+	var drSvc *dredging.Service
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	if s, err := store.New(ctx, dsn); err == nil {
 		cancel()
@@ -45,9 +49,34 @@ func main() {
 		log.Printf("store: persistence disabled; replay/report-from-db unavailable")
 	}
 
-	mgr := api.NewManager(cfgSvc, st)
+	// Initialise the dredging module if DB is available
+	if st != nil {
+		if pool, ok := st.Pool().(*pgxpool.Pool); ok {
+			repo := dredging.NewRepository(pool)
+			migCtx, migCancel := context.WithTimeout(context.Background(), 3*time.Second)
+			if err := repo.Migrate(migCtx); err != nil {
+				log.Printf("dredging: migrate error: %v", err)
+			} else {
+				log.Printf("dredging: schema migrated")
+			}
+			migCancel()
+			svc := dredging.NewService(repo, cfgSvc)
+			initCtx, initCancel := context.WithTimeout(context.Background(), 3*time.Second)
+			_ = svc.EnsureDefaults(initCtx)
+			initCancel()
+			drSvc = svc
+		}
+	}
+	// drSvc remains nil if DB unavailable; handlers degrade gracefully
+
+	var mgr *api.Manager
+	if drSvc != nil {
+		mgr = api.NewManager(cfgSvc, st, drSvc)
+	} else {
+		mgr = api.NewManager(cfgSvc, st)
+	}
 	sens := sensitivity.New(cfgSvc.Get())
-	srv := api.NewServer(cfgSvc, mgr, st, sens)
+	srv := api.NewServer(cfgSvc, mgr, st, sens, drSvc)
 
 	httpSrv := &http.Server{
 		Addr:    addr,

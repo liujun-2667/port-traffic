@@ -23,6 +23,7 @@ onMounted(() => {
         <RouterLink to="/" class="px-3 py-1.5 rounded-md border border-transparent hover:border-glow-cyan/30 hover:text-glow-cyan transition-colors">实时仿真</RouterLink>
         <RouterLink to="/config" class="px-3 py-1.5 rounded-md border border-transparent hover:border-glow-cyan/30 hover:text-glow-cyan transition-colors">参数配置</RouterLink>
         <RouterLink to="/sensitivity" class="px-3 py-1.5 rounded-md border border-transparent hover:border-glow-cyan/30 hover:text-glow-cyan transition-colors">敏感性实验</RouterLink>
+        <RouterLink to="/dredging" class="px-3 py-1.5 rounded-md border border-transparent hover:border-glow-cyan/30 hover:text-glow-cyan transition-colors">航道维护</RouterLink>
         <RouterLink to="/replay" class="px-3 py-1.5 rounded-md border border-transparent hover:border-glow-cyan/30 hover:text-glow-cyan transition-colors">历史回放</RouterLink>
       </nav>
     </header>

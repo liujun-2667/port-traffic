@@ -209,6 +209,7 @@ export interface Frame {
   anchorage: AnchorageState
   events: TimelineEvent[] | null
   strategy: StrategyConfig
+  closedSegments: string[] | null
 }
 
 export type SchedulingStrategy = 'free_flow' | 'tidal_window' | 'alternating_one_way'
@@ -349,4 +350,105 @@ export interface TideResponse {
   series: TidePoint[]
   margin: number
   meanSeaLevel: number
+}
+
+// ---- Dredging module types ----
+
+export type SedimentStatus = 'normal' | 'warning' | 'needs_dredge'
+export type BatchStatus = 'planned' | 'ongoing' | 'completed'
+
+export interface ChannelStatus {
+  segmentId: string
+  currentEffectiveDepth: number
+  baseDepth: number
+  decayRate: number
+  restrictedDraft: number
+  thresholdDepth: number
+  daysToThreshold: number
+  status: SedimentStatus
+  lengthKm: number
+  unitDredgingCost: number
+  lastDredgedAt: string
+}
+
+export interface ChannelSediment {
+  segmentId: string
+  decayRate: number
+  lastDredgedAt: string
+  currentEffectiveDepth: number
+  unitDredgingCost: number
+  restrictedDraft: number
+}
+
+export interface BatchSegment {
+  id: number
+  batchId: number
+  segmentId: string
+  originalDepth: number
+  segmentCost: number
+}
+
+export interface DredgingBatch {
+  id: number
+  name: string
+  status: BatchStatus
+  plannedStartDate: string
+  estimatedDurationDays: number
+  targetDepth: number
+  totalCost: number
+  actualStartDate?: string
+  actualEndDate?: string
+  notes: string
+  segments: BatchSegment[]
+}
+
+export interface SegmentCostItem {
+  segmentId: string
+  currentDepth: number
+  targetDepth: number
+  depthIncrease: number
+  lengthKm: number
+  unitCost: number
+  cost: number
+}
+
+export interface CostPreview {
+  totalCost: number
+  perSegment: SegmentCostItem[]
+}
+
+export interface RecommendItem {
+  rank: number
+  segmentId: string
+  urgency: number
+  daysLeft: number
+  cost: number
+  cumulativeCost: number
+  overBudget: boolean
+  currentDepth: number
+  targetDepth: number
+  urgencyCostRatio: number
+}
+
+export interface OptimizeResult {
+  budget: number
+  totalSpent: number
+  recommendations: RecommendItem[]
+}
+
+export interface UpdateSedimentRequest {
+  decayRate?: number
+  lastDredgedAt?: string
+  currentEffectiveDepth?: number
+  unitDredgingCost?: number
+  restrictedDraft?: number
+}
+
+export interface CreateBatchRequest {
+  name: string
+  segmentIds: string[]
+  plannedStartDate: string
+  estimatedDurationDays: number
+  targetDepth: number
+  notes?: string
 }

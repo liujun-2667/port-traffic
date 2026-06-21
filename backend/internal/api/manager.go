@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"sync"
 	"sync/atomic"
@@ -17,7 +18,22 @@ type Manager struct {
 	runs   map[int64]*runState
 	cfg    *config.Service
 	store  store.Store
+	dredge interface {
+		ActiveClosedSegments(ctx context.Context, simStart time.Time) (map[string]bool, error)
+	}
 	nextID atomic.Int64
+}
+
+// NewManager creates a Manager.
+func NewManager(cfg *config.Service, st store.Store, dr ...interface {
+	ActiveClosedSegments(ctx context.Context, simStart time.Time) (map[string]bool, error)
+}) *Manager {
+	m := &Manager{runs: map[int64]*runState{}, cfg: cfg, store: st}
+	if len(dr) > 0 && dr[0] != nil {
+		m.dredge = dr[0]
+	}
+	m.nextID.Store(1_000_000_000 + time.Now().Unix()%1_000_000_000)
+	return m
 }
 
 type runState struct {
@@ -45,6 +61,18 @@ func NewManager(cfg *config.Service, st store.Store) *Manager {
 // StartRun creates a run, persists it (if store available) and starts stepping.
 func (m *Manager) StartRun(p sim.Params) (int64, error) {
 	cfg := m.cfg.Get()
+	// Resolve active dredging closures before engine start
+	if m.dredge != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		if closed, err := m.dredge.ActiveClosedSegments(ctx, time.Now()); err == nil {
+			ids := make([]string, 0, len(closed))
+			for id := range closed {
+				ids = append(ids, id)
+			}
+			p.ClosedSegments = ids
+		}
+		cancel()
+	}
 	engine := sim.NewEngine(cfg, p)
 
 	paramsJSON, _ := json.Marshal(p)

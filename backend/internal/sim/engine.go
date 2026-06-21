@@ -26,6 +26,7 @@ type Params struct {
 	SpeedFactor    float64 `json:"speedFactor"`
 	SpeedLimitScale float64 `json:"speedLimitScale"` // multiplier on segment speed limits
 	Strategy       StrategyConfig `json:"strategy"`
+	ClosedSegments []string      `json:"closedSegments,omitempty"`
 }
 
 // TrajectoryRow is one ship position sample.
@@ -84,6 +85,8 @@ type Engine struct {
 	strategy    StrategyConfig
 	stateHist   map[string][]StateChange
 	recentEvents []TimelineEvent
+
+	closedSegments map[string]bool
 }
 
 // NewEngine builds an engine from config and run params.
@@ -128,6 +131,10 @@ func NewEngine(cfg *config.Config, p Params) *Engine {
 	if len(strategy.OneWaySegments) == 0 {
 		strategy.OneWaySegments = []string{"S1", "S2", "S3"}
 	}
+	closed := map[string]bool{}
+	for _, id := range p.ClosedSegments {
+		closed[id] = true
+	}
 	e := &Engine{
 		cfg:    c,
 		port:   &c.Port,
@@ -147,6 +154,7 @@ func NewEngine(cfg *config.Config, p Params) *Engine {
 		strategy:     strategy,
 		stateHist:    map[string][]StateChange{},
 		recentEvents: []TimelineEvent{},
+		closedSegments: closed,
 	}
 	e.init()
 	return e
@@ -250,6 +258,18 @@ func (e *Engine) tryEnterChannel() {
 		}
 		berth := e.pickBerth(s)
 		if berth == nil {
+			if s.State == model.StateArrived && e.anchorageCount < e.anchorageCap {
+				e.anchorageCount++
+				prev := s.State
+				s.State = model.StateWaiting
+				if prev != s.State {
+					e.recordStateChange(s)
+				}
+			}
+			continue
+		}
+		route := e.inboundRoute(berth.ID)
+		if e.routeHasClosedSegment(route) {
 			if s.State == model.StateArrived && e.anchorageCount < e.anchorageCap {
 				e.anchorageCount++
 				prev := s.State
@@ -501,12 +521,18 @@ func (e *Engine) handleWork() {
 }
 
 func (e *Engine) startOutbound(s *model.Ship) {
+	route := e.outboundRoute(s.TargetBerth)
+	if e.routeHasClosedSegment(route) {
+		// Channel closed: delay departure until dredging finished; keep working state
+		e.workEnd[s.ID] = e.minute + 30 // re-check in 30 minutes
+		return
+	}
 	prev := s.State
 	s.State = model.StateOutbound
 	if prev != s.State {
 		e.recordStateChange(s)
 	}
-	s.Route = e.outboundRoute(s.TargetBerth)
+	s.Route = route
 	s.RouteIdx = 0
 	seg, _ := e.port.SegmentByID(s.Route[0])
 	s.Direction = -1
@@ -519,6 +545,29 @@ func (e *Engine) startOutbound(s *model.Ship) {
 		Minute: e.minute, Clock: clock(e.minute), Type: "departure_start",
 		ShipA: s.ID, Desc: fmt.Sprintf("%s 完成作业 离泊出港", s.ID),
 	})
+}
+
+func (e *Engine) routeHasClosedSegment(route []string) bool {
+	if len(e.closedSegments) == 0 {
+		return false
+	}
+	for _, id := range route {
+		if e.closedSegments[id] {
+			return true
+		}
+	}
+	return false
+}
+
+// ClosedSegments returns the list of segment IDs currently closed for dredging.
+func (e *Engine) ClosedSegments() []string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	out := make([]string, 0, len(e.closedSegments))
+	for id := range e.closedSegments {
+		out = append(out, id)
+	}
+	return out
 }
 
 func (e *Engine) depart(s *model.Ship) {

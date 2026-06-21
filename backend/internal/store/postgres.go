@@ -34,6 +34,7 @@ type Store interface {
 	GetRun(id int64) (*RunMeta, error)
 	GetTrajectory(id int64, fromMin, toMin int) ([]sim.TrajectoryRow, error)
 	GetReport(id int64) (*sim.Report, error)
+	Pool() any
 	Close()
 }
 
@@ -226,7 +227,8 @@ func (s *pgStore) GetReport(id int64) (*sim.Report, error) {
 	return rep, nil
 }
 
-func (s *pgStore) Close() { s.pool.Close() }
+func (s *pgStore) Pool() any       { return s.pool }
+func (s *pgStore) Close()         { s.pool.Close() }
 
 // ErrNotFound is returned when an entity is missing.
 var ErrNotFound = fmt.Errorf("not found")
