@@ -1,8 +1,7 @@
 FROM golang:1.21-alpine AS builder
-ENV GOFLAGS=-mod=mod GOSUMDB=off
+RUN apk add --no-cache git
+ENV GOFLAGS=-mod=mod GONOSUMDB=* GONOSUMCHECK=* GOFLAGS=-mod=mod
 WORKDIR /src
-COPY go.mod go.sum* ./
-RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/server ./cmd/server
 
