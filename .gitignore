@@ -1,43 +1,26 @@
+# dependencies
+frontend/node_modules/
+
+# build output
+frontend/dist/
+backend/server
+backend/server.exe
+backend/out/
+
+# logs
+*.log
+
+# environment / secrets
+.env
+.env.*
+
 # OS
 .DS_Store
 Thumbs.db
-# Environment
-.env
-.env.*
-!.env.example
-# Logs
-*.log
-logs/
-# Node.js
-node_modules/
-dist/
-build/
-.next/
-.nuxt/
-.output/
-# Python
-__pycache__/
-*.py[cod]
-venv/
-.venv/
-*.egg-info/
-# Go
-/vendor/
-# Rust
-/target/
-# Java
-target/
-*.class
-*.jar
-# IDE
-.idea/
+
+# editor
 .vscode/
-*.swp
-*.swo
-# Docker
-.docker/
-# Test & Coverage
-coverage/
-.nyc_output/
-htmlcov/
-.coverage
+.idea/
+
+# Trae working docs (keep PRD/architecture tracked, ignore caches)
+.trae/cache/

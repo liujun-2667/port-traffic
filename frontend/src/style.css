@@ -1,0 +1,55 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  background:
+    radial-gradient(1200px 600px at 80% -10%, rgba(0, 229, 199, 0.06), transparent),
+    radial-gradient(900px 500px at 0% 110%, rgba(255, 181, 71, 0.05), transparent),
+    #0a1628;
+}
+
+@layer components {
+  .panel {
+    @apply bg-navy-900/70 border border-glow-cyan/15 rounded-xl backdrop-blur-sm;
+  }
+  .panel-title {
+    @apply text-xs font-mono uppercase tracking-widest text-glow-cyan/80;
+  }
+  .btn {
+    @apply px-3 py-1.5 rounded-md text-sm font-medium border border-glow-cyan/30 text-glow-cyan hover:bg-glow-cyan/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed;
+  }
+  .btn-amber {
+    @apply border-glow-amber/40 text-glow-amber hover:bg-glow-amber/10;
+  }
+  .btn-red {
+    @apply border-glow-red/50 text-glow-red hover:bg-glow-red/10;
+  }
+  .input {
+    @apply bg-navy-950/80 border border-glow-cyan/20 rounded-md px-2 py-1 text-sm text-slate-100 focus:outline-none focus:border-glow-cyan/60 w-full;
+  }
+  .label {
+    @apply text-xs text-slate-400 mb-1 block;
+  }
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(0, 229, 199, 0.25);
+  border-radius: 4px;
+}

@@ -1,0 +1,76 @@
+# Port water area model + simulation defaults.
+# Editing this file triggers a hot reload without restarting the service.
+
+sim:
+  durationHours: 24
+  arrivalRate: 3          # ships per hour (Poisson mean)
+  timeStepMinutes: 1
+  speedFactor: 1          # playback multiplier (1/5/20 applied by client)
+  seed: 42
+  safeSpacingShips: 3     # longitudinal spacing multiplier x ship length
+  encounterSafeRatio: 2   # DCPA unsafe when < ratio * (beamA + beamB)
+
+tide:
+  datum: 0.0              # chart datum offset (m)
+  meanSeaLevel: 2.0       # baseline tide (m)
+  components:
+    - {name: M2, amplitude: 1.6, phase: 0.0,  speed: 0.5058}   # 12.42h
+    - {name: S2, amplitude: 0.5, phase: 1.2,  speed: 0.5236}   # 12.00h
+    - {name: K1, amplitude: 0.4, phase: 0.6,  speed: 0.2625}   # 23.93h
+  draftMargin: 1.2        # depth must be >= draftMargin * draft
+
+traffic:
+  typeWeights:
+    container: 0.4
+    bulk: 0.3
+    tanker: 0.2
+    other: 0.1
+  # draft lookup by ship length (meters)
+  lengthMin: 80
+  lengthMax: 400
+  draftTable:
+    - {lenMin: 80,  lenMax: 150, draft: 6.5,  beamRatio: 0.15, dwt: 8000}
+    - {lenMin: 150, lenMax: 200, draft: 8.5,  beamRatio: 0.16, dwt: 25000}
+    - {lenMin: 200, lenMax: 250, draft: 11.0, beamRatio: 0.16, dwt: 50000}
+    - {lenMin: 250, lenMax: 300, draft: 13.0, beamRatio: 0.17, dwt: 90000}
+    - {lenMin: 300, lenMax: 350, draft: 14.5, beamRatio: 0.18, dwt: 140000}
+    - {lenMin: 350, lenMax: 401, draft: 15.5, beamRatio: 0.19, dwt: 200000}
+  maneuver:
+    container: {turningRadius: 350, stopDistance: 600, accelRate: 0.5, decelRate: 0.8}
+    bulk:      {turningRadius: 420, stopDistance: 750, accelRate: 0.4, decelRate: 0.6}
+    tanker:    {turningRadius: 500, stopDistance: 900, accelRate: 0.3, decelRate: 0.5}
+    other:     {turningRadius: 300, stopDistance: 550, accelRate: 0.6, decelRate: 0.9}
+  workDurationMinutes: # mean per type (cargo operation)
+    container: 360
+    bulk: 480
+    tanker: 600
+    other: 240
+  workJitter: 0.2        # +/- fraction of mean
+
+weather:
+  windSpeed: 8          # knots
+  visibility: 5         # nautical miles
+  swell: 0.6            # meters
+
+port:
+  bounds: [{x: 1000, y: 700}, {x: 5800, y: 3100}]
+  segments:
+    - {id: S1, from: {x: 5600, y: 1600}, to: {x: 3900, y: 1600}, width: 320, baseDepth: 17, speedLimit: 12, maxTonnage: 220000}
+    - {id: S2, from: {x: 3900, y: 1600}, to: {x: 2300, y: 1600}, width: 300, baseDepth: 16, speedLimit: 10, maxTonnage: 200000}
+    - {id: S3, from: {x: 2300, y: 1600}, to: {x: 1450, y: 1600}, width: 220, baseDepth: 14, speedLimit: 8,  maxTonnage: 160000}
+    - {id: S4, from: {x: 1450, y: 1600}, to: {x: 1450, y: 2380}, width: 160, baseDepth: 14, speedLimit: 6,  maxTonnage: 160000}
+    - {id: S5, from: {x: 1450, y: 1600}, to: {x: 1450, y: 840},  width: 160, baseDepth: 14, speedLimit: 6,  maxTonnage: 160000}
+  berths:
+    - {id: B1, type: container, maxTonnage: 150000, position: {x: 1320, y: 2360}, branchSeg: S4}
+    - {id: B2, type: container, maxTonnage: 80000,  position: {x: 1320, y: 2180}, branchSeg: S4}
+    - {id: B6, type: general,   maxTonnage: 40000,  position: {x: 1320, y: 2050}, branchSeg: S4}
+    - {id: B3, type: bulk,      maxTonnage: 100000, position: {x: 1320, y: 1000}, branchSeg: S5}
+    - {id: B4, type: bulk,      maxTonnage: 60000,  position: {x: 1320, y: 900},  branchSeg: S5}
+    - {id: B5, type: tanker,    maxTonnage: 120000, position: {x: 1320, y: 820},  branchSeg: S5}
+  anchorages:
+    - {id: A1, capacity: 12, currentCount: 0, position: {x: 4900, y: 2700}}
+  turningAreas:
+    - {id: T1, diameter: 540, position: {x: 1450, y: 1600}}
+  encounterZones:
+    - {id: EZ1, position: {x: 1450, y: 1600}, segmentIds: [S3, S4, S5], radius: 420}
+    - {id: EZ2, position: {x: 2300, y: 1600}, segmentIds: [S2, S3], radius: 360}

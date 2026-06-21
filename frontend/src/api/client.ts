@@ -1,0 +1,86 @@
+import type {
+  AppConfig,
+  DualResult,
+  Frame,
+  Report,
+  RunMeta,
+  RunParams,
+  SinglePoint,
+  TideResponse,
+  TrajectoryRow
+} from './types'
+
+const BASE = '/api'
+
+async function req<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, {
+    headers: { 'Content-Type': 'application/json' },
+    ...init
+  })
+  if (!res.ok) {
+    const txt = await res.text().catch(() => res.statusText)
+    throw new Error(`${res.status} ${txt}`)
+  }
+  if (res.status === 204) return undefined as T
+  return (await res.json()) as T
+}
+
+export const api = {
+  health: () => req<{ ok: boolean }>('/health'),
+  getConfig: () => req<AppConfig>('/config'),
+  putConfig: (body: { sim?: Partial<AppConfig['sim']>; weather?: Partial<AppConfig['weather']> }) =>
+    req<AppConfig>('/config', { method: 'PUT', body: JSON.stringify(body) }),
+  getTide: (hours = 24) => req<TideResponse>(`/tide?hours=${hours}`),
+  startRun: (params: RunParams) =>
+    req<{ runId: number }>('/sim/run', { method: 'POST', body: JSON.stringify(params) }),
+  controlRun: (runId: number, action: string, rate = 0) =>
+    req<{ ok: boolean }>(`/sim/${runId}/control`, {
+      method: 'POST',
+      body: JSON.stringify({ action, rate })
+    }),
+  getState: (runId: number) => req<Frame>(`/sim/${runId}/state`),
+  listRuns: () => req<RunMeta[]>('/runs'),
+  getRun: (runId: number) =>
+    req<{ runId: number; live: boolean; frame?: Frame; meta?: RunMeta }>(`/runs/${runId}`),
+  getTrajectory: (runId: number, from?: number, to?: number) => {
+    const q = new URLSearchParams()
+    if (from != null) q.set('from', String(from))
+    if (to != null) q.set('to', String(to))
+    const qs = q.toString()
+    return req<TrajectoryRow[]>(`/runs/${runId}/trajectory${qs ? '?' + qs : ''}`)
+  },
+  getReport: (runId: number) => req<Report>(`/runs/${runId}/report`),
+  sensitivitySingle: (param: string, from: number, to: number, step: number) =>
+    req<SinglePoint[]>('/sensitivity/single', {
+      method: 'POST',
+      body: JSON.stringify({ param, from, to, step })
+    }),
+  sensitivityDual: (b: {
+    paramX: string
+    fromX: number
+    toX: number
+    stepX: number
+    paramY: string
+    fromY: number
+    toY: number
+    stepY: number
+    metric: string
+  }) => req<DualResult>('/sensitivity/dual', { method: 'POST', body: JSON.stringify(b) })
+}
+
+// Subscribe to the SSE frame stream for a run. Returns an unsubscribe function.
+export function streamRun(runId: number, onFrame: (f: Frame) => void, onError?: (e: Event) => void) {
+  const es = new EventSource(`${BASE}/sim/${runId}/stream`)
+  es.addEventListener('frame', (ev) => {
+    try {
+      onFrame(JSON.parse((ev as MessageEvent).data))
+    } catch {
+      /* ignore malformed frame */
+    }
+  })
+  es.onerror = (e) => {
+    if (onError) onError(e)
+    es.close()
+  }
+  return () => es.close()
+}
