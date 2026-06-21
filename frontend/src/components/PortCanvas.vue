@@ -3,16 +3,32 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { AppConfig, Frame, Ship, ShipType } from '../api/types'
 
 const props = defineProps<{ config: AppConfig | null; frame: Frame | null }>()
+const emit = defineEmits<{ (e: 'shipClick', ship: Ship): void }>()
+
 const canvas = ref<HTMLCanvasElement | null>(null)
 let ctx: CanvasRenderingContext2D | null = null
 let raf = 0
 let flashPhase = 0
+
+const hoveredShip = ref<Ship | null>(null)
+const hoverPos = ref<{ x: number; y: number }>({ x: 0, y: 0 })
 
 const TYPE_COLOR: Record<ShipType, string> = {
   container: '#22c55e',
   bulk: '#3b82f6',
   tanker: '#ef4444',
   other: '#9ca3af'
+}
+
+const STATE_LABEL: Record<string, string> = {
+  arrived: '已到达',
+  waiting: '等待中',
+  inbound: '进港',
+  berthing: '靠泊中',
+  working: '作业中',
+  outbound: '出港',
+  departed: '已离港',
+  holding: '等待避让'
 }
 
 interface Transform {
@@ -46,7 +62,6 @@ function makeTransform(cfg: AppConfig, w: number, h: number): Transform {
   const bw = b.maxX - b.minX
   const bh = b.maxY - b.minY
   const scale = Math.min(w / bw, h / bh)
-  // center
   const offX = (w - bw * scale) / 2 - b.minX * scale
   const offY = (h - bh * scale) / 2 - b.minY * scale
   return { scale, offX, offY, w, h }
@@ -54,6 +69,10 @@ function makeTransform(cfg: AppConfig, w: number, h: number): Transform {
 
 function toPx(t: Transform, x: number, y: number) {
   return { px: t.offX + x * t.scale, py: t.offY + (y) * t.scale }
+}
+
+function fromPx(t: Transform, px: number, py: number) {
+  return { x: (px - t.offX) / t.scale, y: (py - t.offY) / t.scale }
 }
 
 function segHeading(cfg: AppConfig, ship: Ship) {
@@ -78,7 +97,6 @@ function draw() {
   const w = rect.width
   const h = rect.height
   ctx.clearRect(0, 0, w, h)
-  // water background
   ctx.fillStyle = '#0a1628'
   ctx.fillRect(0, 0, w, h)
   const cfg = props.config
@@ -87,7 +105,6 @@ function draw() {
   const segCong = new Map<string, boolean>()
   if (props.frame) for (const sc of props.frame.segmentCongestion) segCong.set(sc.segId, sc.congested)
 
-  // encounter zones
   for (const z of cfg.port.encounterZones) {
     const { px, py } = toPx(t, z.position.x, z.position.y)
     ctx.beginPath()
@@ -102,7 +119,6 @@ function draw() {
     ctx.fillText(z.id, px + 4, py - 4)
   }
 
-  // channels
   for (const seg of cfg.port.segments) {
     const a = toPx(t, seg.from.x, seg.from.y)
     const b = toPx(t, seg.to.x, seg.to.y)
@@ -124,7 +140,6 @@ function draw() {
     ctx.strokeStyle = congested ? 'rgba(255,181,71,0.7)' : 'rgba(59,130,246,0.5)'
     ctx.lineWidth = 1
     ctx.stroke()
-    // direction arrow
     const mx = (a.px + b.px) / 2
     const my = (a.py + b.py) / 2
     ctx.fillStyle = 'rgba(148,163,184,0.7)'
@@ -132,7 +147,6 @@ function draw() {
     ctx.fillText(seg.id, mx - 6, my - halfW - 4)
   }
 
-  // turning areas
   for (const ta of cfg.port.turningAreas) {
     const { px, py } = toPx(t, ta.position.x, ta.position.y)
     ctx.beginPath()
@@ -143,7 +157,6 @@ function draw() {
     ctx.setLineDash([])
   }
 
-  // anchorages
   for (const an of cfg.port.anchorages) {
     const { px, py } = toPx(t, an.position.x, an.position.y)
     const r = Math.max(18, 40)
@@ -162,7 +175,6 @@ function draw() {
     ctx.fillText(`${an.id} ${count}/${an.capacity}`, px - 18, py + 3)
   }
 
-  // berths
   for (const berth of cfg.port.berths) {
     const { px, py } = toPx(t, berth.position.x, berth.position.y)
     const st = props.frame?.berths.find((b) => b.id === berth.id)
@@ -175,13 +187,19 @@ function draw() {
     ctx.strokeRect(px - 7, py - 4, 14, 8)
   }
 
-  // ships
   if (props.frame) {
     for (const ship of props.frame.ships) {
       if (ship.state === 'departed' || ship.state === 'arrived') continue
       const { px, py } = toPx(t, ship.position.x, ship.position.y)
       const color = TYPE_COLOR[ship.type] || '#9ca3af'
       const size = Math.max(4, Math.min(10, ship.length / 60))
+      if (hoveredShip.value?.id === ship.id) {
+        ctx.beginPath()
+        ctx.arc(px, py, size + 6, 0, Math.PI * 2)
+        ctx.strokeStyle = '#ffffff'
+        ctx.lineWidth = 1.5
+        ctx.stroke()
+      }
       if (ship.state === 'working' || ship.state === 'berthing') {
         ctx.fillStyle = color
         ctx.fillRect(px - size / 2, py - size / 2, size, size)
@@ -206,7 +224,6 @@ function draw() {
       }
     }
 
-    // danger encounter lines (flashing red)
     const flashOn = Math.sin(flashPhase) > 0
     for (const enc of props.frame.encounters) {
       if (!enc.dangerous) continue
@@ -226,7 +243,6 @@ function draw() {
     }
   }
 
-  // legend
   drawLegend(ctx, w, h)
 }
 
@@ -258,6 +274,47 @@ function drawLegend(c: CanvasRenderingContext2D, w: number, h: number) {
   c.fillText('危险会遇', x + 14, y)
 }
 
+function pickShip(clientX: number, clientY: number): Ship | null {
+  const cv = canvas.value
+  const cfg = props.config
+  const frame = props.frame
+  if (!cv || !cfg || !frame) return null
+  const rect = cv.getBoundingClientRect()
+  const px = clientX - rect.left
+  const py = clientY - rect.top
+  const t = makeTransform(cfg, rect.width, rect.height)
+  const hitRadius = 14
+  let closest: Ship | null = null
+  let closestDist = Infinity
+  for (const ship of frame.ships) {
+    if (ship.state === 'departed' || ship.state === 'arrived') continue
+    const s = toPx(t, ship.position.x, ship.position.y)
+    const d = Math.hypot(px - s.px, py - s.py)
+    if (d < hitRadius && d < closestDist) {
+      closestDist = d
+      closest = ship
+    }
+  }
+  return closest
+}
+
+function handleMouseMove(ev: MouseEvent) {
+  const ship = pickShip(ev.clientX, ev.clientY)
+  hoveredShip.value = ship
+  const cv = canvas.value
+  if (cv && ship) {
+    const rect = cv.getBoundingClientRect()
+    hoverPos.value = { x: ev.clientX - rect.left, y: ev.clientY - rect.top }
+  }
+}
+
+function handleClick(ev: MouseEvent) {
+  const ship = pickShip(ev.clientX, ev.clientY)
+  if (ship) {
+    emit('shipClick', ship)
+  }
+}
+
 function loop() {
   flashPhase += 0.18
   draw()
@@ -282,10 +339,30 @@ const minuteLabel = computed(() => `T+${props.frame?.minute ?? 0} min`)
 
 <template>
   <div class="relative h-full w-full">
-    <canvas ref="canvas" class="h-full w-full"></canvas>
+    <canvas
+      ref="canvas"
+      class="h-full w-full cursor-pointer"
+      @mousemove="handleMouseMove"
+      @click="handleClick"
+    ></canvas>
     <div class="absolute right-3 top-3 rounded-md bg-navy-950/70 px-3 py-1.5 text-right font-mono text-xs text-glow-cyan backdrop-blur">
       <div>{{ clockLabel }}</div>
       <div class="text-slate-400">{{ minuteLabel }}</div>
+    </div>
+
+    <div
+      v-if="hoveredShip"
+      class="pointer-events-none absolute z-20 rounded-md border border-glow-cyan/30 bg-navy-950/95 px-3 py-2 text-xs shadow-xl backdrop-blur"
+      :style="{ left: hoverPos.x + 12 + 'px', top: hoverPos.y + 12 + 'px' }"
+    >
+      <div class="mb-1 font-mono text-sm text-glow-cyan">{{ hoveredShip.id }}</div>
+      <div class="space-y-0.5 text-slate-300">
+        <div><span class="text-slate-500">类型:</span> {{ hoveredShip.type }}</div>
+        <div><span class="text-slate-500">船长:</span> {{ hoveredShip.length.toFixed(0) }}m</div>
+        <div><span class="text-slate-500">航速:</span> {{ hoveredShip.speedKn.toFixed(1) }} kn</div>
+        <div><span class="text-slate-500">目标泊位:</span> {{ hoveredShip.targetBerth || '—' }}</div>
+        <div><span class="text-slate-500">状态:</span> <span class="text-glow-cyan">{{ STATE_LABEL[hoveredShip.state] || hoveredShip.state }}</span></div>
+      </div>
     </div>
   </div>
 </template>

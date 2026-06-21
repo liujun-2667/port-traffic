@@ -33,7 +33,7 @@ func (e *Engine) Report() Report {
 			DurationMinutes: e.durationMin, ArrivalRate: e.cfg.Sim.ArrivalRate,
 			Seed: e.cfg.Sim.Seed, WindSpeed: e.cfg.Weather.WindSpeed,
 			Visibility: e.cfg.Weather.Visibility, SegmentCount: len(e.port.Segments),
-			BerthCount: len(e.port.Berths),
+			BerthCount: len(e.port.Berths), Strategy: e.strategy,
 		},
 		Metrics: Metrics{
 			TotalThroughput:     e.thruIn + e.thruOut,

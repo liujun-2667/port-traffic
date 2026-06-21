@@ -3,15 +3,19 @@ import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useSimStore } from '../stores/sim'
 import { api } from '../api/client'
-import type { TidePoint } from '../api/types'
+import type { Ship, TidePoint } from '../api/types'
 import PortCanvas from '../components/PortCanvas.vue'
 import KpiPanel from '../components/KpiPanel.vue'
 import ControlBar from '../components/ControlBar.vue'
 import BaseChart from '../components/BaseChart.vue'
+import ShipDetailSidebar from '../components/ShipDetailSidebar.vue'
+import EventLogPanel from '../components/EventLogPanel.vue'
 
 const store = useSimStore()
 const router = useRouter()
 const tideSeries = ref<TidePoint[]>([])
+
+const selectedShip = ref<Ship | null>(null)
 
 onMounted(async () => {
   if (!store.config) await store.loadConfig().catch(() => {})
@@ -127,18 +131,33 @@ const tideOption = computed(() => {
 function viewReport() {
   if (store.runId) router.push(`/report/${store.runId}`)
 }
+
+function handleShipClick(ship: Ship) {
+  selectedShip.value = ship
+}
+
+function closeShipDetail() {
+  selectedShip.value = null
+}
 </script>
 
 <template>
   <div class="flex h-full flex-col gap-3 p-3">
     <ControlBar />
     <KpiPanel :frame="store.frame" />
-    <div class="grid min-h-0 flex-1 grid-cols-1 gap-3 lg:grid-cols-3">
-      <div class="panel relative overflow-hidden lg:col-span-2">
+    <div class="grid min-h-0 flex-1 grid-cols-1 gap-3 lg:grid-cols-4">
+      <div class="panel relative overflow-hidden lg:col-span-3">
         <div class="absolute left-3 top-3 z-10 panel-title">港口实时仿真俯视图</div>
-        <PortCanvas :config="store.config" :frame="store.frame" />
+        <PortCanvas :config="store.config" :frame="store.frame" @ship-click="handleShipClick" />
       </div>
-      <div class="flex min-h-0 flex-col gap-3">
+      <div v-if="selectedShip" class="min-h-0">
+        <ShipDetailSidebar
+          :run-id="store.runId"
+          :ship="selectedShip"
+          @close="closeShipDetail"
+        />
+      </div>
+      <div v-else class="flex min-h-0 flex-col gap-3">
         <div class="panel p-3">
           <div class="panel-title mb-1">吞吐量随时间</div>
           <BaseChart :option="throughputOption" height="200px" />
@@ -173,5 +192,6 @@ function viewReport() {
         <button v-if="store.done" class="btn mt-auto self-start" @click="viewReport">查看评估报告 →</button>
       </div>
     </div>
+    <EventLogPanel :events="store.eventLog" />
   </div>
 </template>

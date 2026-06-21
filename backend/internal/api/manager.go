@@ -266,3 +266,18 @@ func (m *Manager) Report(id int64) (sim.Report, bool) {
 	}
 	return r.engine.Report(), true
 }
+
+// ShipDetail returns the state history and dangerous encounters for a specific ship.
+func (m *Manager) ShipDetail(id int64, shipID string) (sim.ShipDetail, bool) {
+	m.mu.Lock()
+	r, ok := m.runs[id]
+	m.mu.Unlock()
+	if !ok {
+		return sim.ShipDetail{}, false
+	}
+	return sim.ShipDetail{
+		ShipID:              shipID,
+		StateHistory:        r.engine.GetStateHistory(shipID),
+		DangerousEncounters: r.engine.GetShipDangerousEncounters(shipID),
+	}, true
+}

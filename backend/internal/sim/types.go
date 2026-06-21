@@ -48,6 +48,8 @@ type Frame struct {
 	NavigableDepth    float64              `json:"navigableDepth"`
 	Berths            []BerthState         `json:"berths"`
 	Anchorage         AnchorageState       `json:"anchorage"`
+	Events            []TimelineEvent      `json:"events"`
+	Strategy          StrategyConfig       `json:"strategy"`
 }
 
 // BerthState is a berth occupancy snapshot.
@@ -101,13 +103,14 @@ type Report struct {
 
 // Summary captures simulation parameters.
 type Summary struct {
-	DurationMinutes int     `json:"durationMinutes"`
-	ArrivalRate     float64 `json:"arrivalRate"`
-	Seed             int64   `json:"seed"`
-	WindSpeed        float64 `json:"windSpeed"`
-	Visibility       float64 `json:"visibility"`
-	SegmentCount     int     `json:"segmentCount"`
-	BerthCount       int     `json:"berthCount"`
+	DurationMinutes int            `json:"durationMinutes"`
+	ArrivalRate     float64        `json:"arrivalRate"`
+	Seed            int64          `json:"seed"`
+	WindSpeed       float64        `json:"windSpeed"`
+	Visibility      float64        `json:"visibility"`
+	SegmentCount    int            `json:"segmentCount"`
+	BerthCount      int            `json:"berthCount"`
+	Strategy        StrategyConfig `json:"strategy"`
 }
 
 // Metrics aggregates safety/throughput statistics.
@@ -128,4 +131,37 @@ type SegCongAvg struct {
 	SegID         string  `json:"segId"`
 	AvgCongestion float64 `json:"avgCongestion"`
 	PeakCongestion float64 `json:"peakCongestion"`
+}
+
+// SchedulingStrategy enumerates available scheduling modes.
+type SchedulingStrategy string
+
+const (
+	StrategyFreeFlow       SchedulingStrategy = "free_flow"
+	StrategyTidalWindow    SchedulingStrategy = "tidal_window"
+	StrategyAlternatingOneWay SchedulingStrategy = "alternating_one_way"
+)
+
+// StrategyConfig holds parameters for the active scheduling strategy.
+type StrategyConfig struct {
+	Strategy             SchedulingStrategy `json:"strategy"`
+	TidalThresholdMeters float64            `json:"tidalThresholdMeters"`
+	OneWaySwitchMinutes  int                `json:"oneWaySwitchMinutes"`
+	OneWaySegments       []string           `json:"oneWaySegments"`
+}
+
+// StateChange records a ship's state transition for the timeline.
+type StateChange struct {
+	Minute    int     `json:"minute"`
+	Clock     string  `json:"clock"`
+	State     string  `json:"state"`
+	X         float64 `json:"x"`
+	Y         float64 `json:"y"`
+}
+
+// ShipDetail contains full trajectory timeline and encounter records for a ship.
+type ShipDetail struct {
+	ShipID           string           `json:"shipId"`
+	StateHistory     []StateChange    `json:"stateHistory"`
+	DangerousEncounters []TimelineEvent `json:"dangerousEncounters"`
 }

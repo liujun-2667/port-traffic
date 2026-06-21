@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { api, streamRun } from '../api/client'
-import type { AppConfig, Frame, RunParams } from '../api/types'
+import type { AppConfig, Frame, RunParams, TimelineEvent } from '../api/types'
 
 export const useSimStore = defineStore('sim', () => {
   const config = ref<AppConfig | null>(null)
@@ -14,6 +14,8 @@ export const useSimStore = defineStore('sim', () => {
   const error = ref('')
   const throughputHist = ref<{ minute: number; in: number; out: number }[]>([])
   const waitMinutes = ref<number[]>([])
+  const eventLog = ref<TimelineEvent[]>([])
+  const seenEventKeys = ref<Set<string>>(new Set())
 
   let stopStream: (() => void) | null = null
 
@@ -34,6 +36,8 @@ export const useSimStore = defineStore('sim', () => {
     frame.value = null
     throughputHist.value = []
     waitMinutes.value = []
+    eventLog.value = []
+    seenEventKeys.value = new Set()
     done.value = false
     error.value = ''
     connecting.value = true
@@ -55,8 +59,17 @@ export const useSimStore = defineStore('sim', () => {
         if (f.throughput && f.throughput.length) {
           throughputHist.value = f.throughput
         }
-        if (f.kpi) {
-          // crude wait distribution: track queue growth as proxy; real data via report
+        if (f.events && f.events.length) {
+          for (const ev of f.events) {
+            const key = `${ev.minute}|${ev.type}|${ev.shipA}|${ev.shipB}|${ev.desc}`
+            if (!seenEventKeys.value.has(key)) {
+              seenEventKeys.value.add(key)
+              eventLog.value.push(ev)
+              if (eventLog.value.length > 200) {
+                eventLog.value = eventLog.value.slice(eventLog.value.length - 200)
+              }
+            }
+          }
         }
         if (f.done) {
           done.value = true
@@ -102,6 +115,7 @@ export const useSimStore = defineStore('sim', () => {
     error,
     throughputHist,
     waitMinutes,
+    eventLog,
     kpi,
     loadConfig,
     updateConfig,

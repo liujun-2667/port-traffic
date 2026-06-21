@@ -45,6 +45,8 @@ func (e *Engine) Frame() Frame {
 		KPI: e.kpiLocked(), Throughput: thru,
 		TideLevel: e.tide.Level(e.hours()), NavigableDepth: depth,
 		Berths: berths, Anchorage: anc,
+		Events: append([]TimelineEvent(nil), e.recentEvents...),
+		Strategy: e.strategy,
 	}
 }
 

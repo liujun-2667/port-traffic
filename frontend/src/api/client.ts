@@ -5,6 +5,7 @@ import type {
   Report,
   RunMeta,
   RunParams,
+  ShipDetail,
   SinglePoint,
   TideResponse,
   TrajectoryRow
@@ -65,7 +66,9 @@ export const api = {
     toY: number
     stepY: number
     metric: string
-  }) => req<DualResult>('/sensitivity/dual', { method: 'POST', body: JSON.stringify(b) })
+  }) => req<DualResult>('/sensitivity/dual', { method: 'POST', body: JSON.stringify(b) }),
+  getShipDetail: (runId: number, shipId: string) =>
+    req<ShipDetail>(`/sim/${runId}/ship/${encodeURIComponent(shipId)}`)
 }
 
 // Subscribe to the SSE frame stream for a run. Returns an unsubscribe function.

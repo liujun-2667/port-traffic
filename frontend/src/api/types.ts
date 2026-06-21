@@ -207,6 +207,31 @@ export interface Frame {
   navigableDepth: number
   berths: BerthState[]
   anchorage: AnchorageState
+  events: TimelineEvent[]
+  strategy: StrategyConfig
+}
+
+export type SchedulingStrategy = 'free_flow' | 'tidal_window' | 'alternating_one_way'
+
+export interface StrategyConfig {
+  strategy: SchedulingStrategy
+  tidalThresholdMeters: number
+  oneWaySwitchMinutes: number
+  oneWaySegments: string[]
+}
+
+export interface StateChange {
+  minute: number
+  clock: string
+  state: string
+  x: number
+  y: number
+}
+
+export interface ShipDetail {
+  shipId: string
+  stateHistory: StateChange[]
+  dangerousEncounters: TimelineEvent[]
 }
 
 export interface RunParams {
@@ -217,6 +242,7 @@ export interface RunParams {
   visibility: number
   speedFactor: number
   speedLimitScale: number
+  strategy: StrategyConfig
 }
 
 export interface RunMeta {
@@ -266,6 +292,7 @@ export interface Summary {
   visibility: number
   segmentCount: number
   berthCount: number
+  strategy: StrategyConfig
 }
 
 export interface SegCongAvg {

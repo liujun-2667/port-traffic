@@ -56,6 +56,7 @@ func (s *Server) Router() http.Handler {
 	r.Get("/api/runs/{runId}", s.getRun)
 	r.Get("/api/runs/{runId}/trajectory", s.getTrajectory)
 	r.Get("/api/runs/{runId}/report", s.getReport)
+	r.Get("/api/sim/{runId}/ship/{shipId}", s.getShipDetail)
 	return r
 }
 
@@ -363,6 +364,24 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+func (s *Server) getShipDetail(w http.ResponseWriter, r *http.Request) {
+	id, ok := runID(w, r)
+	if !ok {
+		return
+	}
+	shipID := chi.URLParam(r, "shipId")
+	if shipID == "" {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("missing shipId"))
+		return
+	}
+	detail, ok := s.mgr.ShipDetail(id, shipID)
+	if !ok {
+		writeError(w, http.StatusNotFound, fmt.Errorf("ship not found"))
+		return
+	}
+	writeJSON(w, http.StatusOK, detail)
 }
 
 func writeError(w http.ResponseWriter, status int, err error) {

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { reactive, ref } from 'vue'
 import { useSimStore } from '../stores/sim'
+import type { SchedulingStrategy, StrategyConfig } from '../api/types'
 
 const store = useSimStore()
 
@@ -13,6 +14,19 @@ const params = reactive({
   speedLimitScale: 1
 })
 
+const strategy = reactive<StrategyConfig>({
+  strategy: 'free_flow',
+  tidalThresholdMeters: 5.0,
+  oneWaySwitchMinutes: 30,
+  oneWaySegments: ['S1', 'S2', 'S3']
+})
+
+const strategies: { value: SchedulingStrategy; label: string; desc: string }[] = [
+  { value: 'free_flow', label: '自由通行', desc: '无额外约束,默认策略' },
+  { value: 'tidal_window', label: '潮汐窗口调度', desc: '大型船舶仅在潮位高于阈值时进港' },
+  { value: 'alternating_one_way', label: '单向交替通行', desc: '指定航段每30分钟切换通行方向' }
+]
+
 const rates = [
   { label: '1x', value: 1 },
   { label: '5x', value: 5 },
@@ -23,7 +37,11 @@ const activeRate = ref(1)
 
 async function start() {
   activeRate.value = 1
-  await store.startRun({ ...params, speedFactor: activeRate.value })
+  await store.startRun({
+    ...params,
+    speedFactor: activeRate.value,
+    strategy: { ...strategy }
+  })
 }
 async function setRate(v: number) {
   activeRate.value = v
@@ -57,6 +75,33 @@ async function setRate(v: number) {
       <label class="label">限速倍率</label>
       <input v-model.number="params.speedLimitScale" type="number" min="0.5" max="1.5" step="0.1" class="input w-20" />
     </div>
+
+    <div class="mx-1 h-8 w-px bg-glow-cyan/15"></div>
+
+    <div class="flex flex-col">
+      <label class="label">调度策略</label>
+      <div class="flex gap-1">
+        <button
+          v-for="s in strategies"
+          :key="s.value"
+          class="btn"
+          :class="{ 'bg-glow-cyan/15': strategy.strategy === s.value }"
+          :title="s.desc"
+          @click="strategy.strategy = s.value"
+        >{{ s.label }}</button>
+      </div>
+    </div>
+
+    <div v-if="strategy.strategy === 'tidal_window'" class="flex flex-col">
+      <label class="label">潮位阈值 (m)</label>
+      <input v-model.number="strategy.tidalThresholdMeters" type="number" min="1" max="15" step="0.1" class="input w-24" />
+    </div>
+
+    <div v-if="strategy.strategy === 'alternating_one_way'" class="flex flex-col">
+      <label class="label">切换间隔 (min)</label>
+      <input v-model.number="strategy.oneWaySwitchMinutes" type="number" min="5" max="120" step="5" class="input w-20" />
+    </div>
+
     <button class="btn" :disabled="store.connecting" @click="start">
       {{ store.connecting ? '启动中…' : '启动仿真' }}
     </button>
@@ -74,6 +119,7 @@ async function setRate(v: number) {
 
     <div class="ml-auto flex items-center gap-2 text-xs font-mono">
       <span v-if="store.runId" class="text-slate-400">RUN #{{ store.runId }}</span>
+      <span v-if="store.frame?.strategy" class="text-glow-cyan/70">[{{ strategies.find(s => s.value === store.frame.strategy.strategy)?.label }}]</span>
       <span v-if="store.connecting" class="text-glow-amber animate-pulse">连接中…</span>
       <span v-else-if="store.done" class="text-glow-cyan">已完成</span>
       <span v-else-if="store.playing" class="text-glow-cyan animate-pulse">● LIVE</span>

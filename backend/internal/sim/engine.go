@@ -25,6 +25,7 @@ type Params struct {
 	Visibility     float64 `json:"visibility"`
 	SpeedFactor    float64 `json:"speedFactor"`
 	SpeedLimitScale float64 `json:"speedLimitScale"` // multiplier on segment speed limits
+	Strategy       StrategyConfig `json:"strategy"`
 }
 
 // TrajectoryRow is one ship position sample.
@@ -79,6 +80,10 @@ type Engine struct {
 	segCongCount    map[string]int
 	segCongPeak     map[string]float64
 	trajectory      []TrajectoryRow
+
+	strategy    StrategyConfig
+	stateHist   map[string][]StateChange
+	recentEvents []TimelineEvent
 }
 
 // NewEngine builds an engine from config and run params.
@@ -110,6 +115,19 @@ func NewEngine(cfg *config.Config, p Params) *Engine {
 			}
 		}
 	}
+	strategy := p.Strategy
+	if strategy.Strategy == "" {
+		strategy.Strategy = StrategyFreeFlow
+	}
+	if strategy.TidalThresholdMeters <= 0 {
+		strategy.TidalThresholdMeters = 5.0
+	}
+	if strategy.OneWaySwitchMinutes <= 0 {
+		strategy.OneWaySwitchMinutes = 30
+	}
+	if len(strategy.OneWaySegments) == 0 {
+		strategy.OneWaySegments = []string{"S1", "S2", "S3"}
+	}
 	e := &Engine{
 		cfg:    c,
 		port:   &c.Port,
@@ -126,6 +144,9 @@ func NewEngine(cfg *config.Config, p Params) *Engine {
 		segCongSum:   map[string]float64{},
 		segCongCount: map[string]int{},
 		segCongPeak:  map[string]float64{},
+		strategy:     strategy,
+		stateHist:    map[string][]StateChange{},
+		recentEvents: []TimelineEvent{},
 	}
 	e.init()
 	return e
@@ -195,9 +216,17 @@ func (e *Engine) processArrivals() {
 		if seg.Length() > 0 {
 			s.Position = seg.From
 		}
+		prev := s.State
 		s.State = model.StateArrived
+		if prev != s.State {
+			e.recordStateChange(s)
+		}
 		e.ships = append(e.ships, s)
 		e.byID[s.ID] = s
+		e.addEvent(TimelineEvent{
+			Minute: e.minute, Clock: clock(e.minute), Type: "arrival",
+			ShipA: s.ID, Desc: fmt.Sprintf("%s 到达锚地", s.ID),
+		})
 	}
 }
 
@@ -213,11 +242,21 @@ func (e *Engine) tryEnterChannel() {
 		if !e.spacingOK(s) || !e.s1HasCapacity(s) {
 			continue
 		}
+		if !e.tidalWindowAllows(s) {
+			continue
+		}
+		if e.strategy.Strategy == StrategyAlternatingOneWay && e.currentOneWayDirection() != 1 {
+			continue
+		}
 		berth := e.pickBerth(s)
 		if berth == nil {
 			if s.State == model.StateArrived && e.anchorageCount < e.anchorageCap {
 				e.anchorageCount++
+				prev := s.State
 				s.State = model.StateWaiting
+				if prev != s.State {
+					e.recordStateChange(s)
+				}
 			}
 			continue
 		}
@@ -230,12 +269,20 @@ func (e *Engine) tryEnterChannel() {
 		s.RouteIdx = 0
 		s.SegOffset = 0
 		s.Direction = 1
+		prev := s.State
 		s.State = model.StateInbound
+		if prev != s.State {
+			e.recordStateChange(s)
+		}
 		s.Position = seg.From
 		s.EnterMinute = e.minute
 		s.WaitMinutes = e.minute - s.ArrivalMinute
 		e.waitTimes = append(e.waitTimes, s.WaitMinutes)
 		e.thruIn++
+		e.addEvent(TimelineEvent{
+			Minute: e.minute, Clock: clock(e.minute), Type: "inbound_start",
+			ShipA: s.ID, Desc: fmt.Sprintf("%s 开始进港 目标泊位 %s", s.ID, berth.ID),
+		})
 	}
 }
 
@@ -317,6 +364,11 @@ func (e *Engine) updateHolding() {
 			inTransit = append(inTransit, s)
 		}
 	}
+	for _, s := range inTransit {
+		if !e.oneWayAllows(s) {
+			e.hold[s.ID] = true
+		}
+	}
 	for i := 0; i < len(inTransit); i++ {
 		for j := i + 1; j < len(inTransit); j++ {
 			A, B := inTransit[i], inTransit[j]
@@ -344,6 +396,7 @@ func (e *Engine) moveShips() {
 			continue
 		}
 		holding := e.hold[s.ID]
+		prev := s.State
 		if holding {
 			s.State = model.StateHolding
 		} else if s.State == model.StateHolding {
@@ -352,6 +405,9 @@ func (e *Engine) moveShips() {
 			} else {
 				s.State = model.StateOutbound
 			}
+		}
+		if prev != s.State {
+			e.recordStateChange(s)
 		}
 		seg, ok := e.port.SegmentByID(s.Route[s.RouteIdx])
 		if !ok {
@@ -417,13 +473,17 @@ func (e *Engine) posOnSeg(seg model.Segment, off float64, dir int) model.Point {
 }
 
 func (e *Engine) arriveAtBerth(s *model.Ship, seg model.Segment) {
+	prev := s.State
 	s.State = model.StateWorking
+	if prev != s.State {
+		e.recordStateChange(s)
+	}
 	s.BerthMinute = e.minute
 	s.Position = e.posOnSeg(seg, e.berthOffset[s.TargetBerth], s.Direction)
 	s.SpeedKn = 0
 	dur := e.workDuration(s)
 	e.workEnd[s.ID] = e.minute + dur
-	e.events = append(e.events, TimelineEvent{
+	e.addEvent(TimelineEvent{
 		Minute: e.minute, Clock: clock(e.minute), Type: "berth",
 		ShipA: s.ID, Desc: fmt.Sprintf("%s 抵达泊位 %s 开始作业 %dmin", s.ID, s.TargetBerth, dur),
 	})
@@ -441,7 +501,11 @@ func (e *Engine) handleWork() {
 }
 
 func (e *Engine) startOutbound(s *model.Ship) {
+	prev := s.State
 	s.State = model.StateOutbound
+	if prev != s.State {
+		e.recordStateChange(s)
+	}
 	s.Route = e.outboundRoute(s.TargetBerth)
 	s.RouteIdx = 0
 	seg, _ := e.port.SegmentByID(s.Route[0])
@@ -451,21 +515,25 @@ func (e *Engine) startOutbound(s *model.Ship) {
 	s.Position = e.posOnSeg(seg, s.SegOffset, -1)
 	s.SpeedKn = 0
 	e.berthShip[s.TargetBerth] = ""
-	e.events = append(e.events, TimelineEvent{
+	e.addEvent(TimelineEvent{
 		Minute: e.minute, Clock: clock(e.minute), Type: "departure_start",
 		ShipA: s.ID, Desc: fmt.Sprintf("%s 完成作业 离泊出港", s.ID),
 	})
 }
 
 func (e *Engine) depart(s *model.Ship) {
+	prev := s.State
 	s.State = model.StateDeparted
+	if prev != s.State {
+		e.recordStateChange(s)
+	}
 	s.Position = model.Point{}
 	s.SpeedKn = 0
 	e.thruOut++
 	e.trajectory = append(e.trajectory, TrajectoryRow{
 		ShipID: s.ID, Minute: e.minute, X: 0, Y: 0, State: "departed", Speed: 0,
 	})
-	e.events = append(e.events, TimelineEvent{
+	e.addEvent(TimelineEvent{
 		Minute: e.minute, Clock: clock(e.minute), Type: "departed",
 		ShipA: s.ID, Desc: fmt.Sprintf("%s 离港", s.ID),
 	})
@@ -481,7 +549,7 @@ func (e *Engine) assessSafety() {
 		if enc.Dangerous && !e.activeDanger[key] {
 			e.activeDanger[key] = true
 			e.dangerousCount++
-			e.events = append(e.events, TimelineEvent{
+			e.addEvent(TimelineEvent{
 				Minute: e.minute, Clock: clock(e.minute), Type: "danger",
 				ShipA: enc.ShipA, ShipB: enc.ShipB,
 				Desc: fmt.Sprintf("危险会遇 %s/%s DCPA=%.0fm TCPA=%.1fmin", enc.ShipA, enc.ShipB, enc.DCPA, enc.TCPA),
@@ -490,7 +558,7 @@ func (e *Engine) assessSafety() {
 		if enc.Warning && !e.activeWarn[key] {
 			e.activeWarn[key] = true
 			e.warningCount++
-			e.events = append(e.events, TimelineEvent{
+			e.addEvent(TimelineEvent{
 				Minute: e.minute, Clock: clock(e.minute), Type: "warning",
 				ShipA: enc.ShipA, ShipB: enc.ShipB,
 				Desc: fmt.Sprintf("碰撞预警 %s/%s TCPA=%.1fmin", enc.ShipA, enc.ShipB, enc.TCPA),
@@ -596,4 +664,91 @@ func clock(minute int) string {
 	h := (minute / 60) % 24
 	m := minute % 60
 	return fmt.Sprintf("%02d:%02d", h, m)
+}
+
+func (e *Engine) addEvent(ev TimelineEvent) {
+	e.events = append(e.events, ev)
+	e.recentEvents = append(e.recentEvents, ev)
+	if len(e.recentEvents) > 200 {
+		e.recentEvents = e.recentEvents[len(e.recentEvents)-200:]
+	}
+}
+
+func (e *Engine) recordStateChange(s *model.Ship) {
+	sc := StateChange{
+		Minute: e.minute,
+		Clock:  clock(e.minute),
+		State:  string(s.State),
+		X:      s.Position.X,
+		Y:      s.Position.Y,
+	}
+	e.stateHist[s.ID] = append(e.stateHist[s.ID], sc)
+}
+
+func (e *Engine) tidalWindowAllows(s *model.Ship) bool {
+	if e.strategy.Strategy != StrategyTidalWindow {
+		return true
+	}
+	largeVessel := s.Length >= 200 || s.Draft >= e.strategy.TidalThresholdMeters
+	if !largeVessel {
+		return true
+	}
+	curLevel := e.tide.Level(e.hours())
+	return curLevel >= e.strategy.TidalThresholdMeters
+}
+
+func (e *Engine) currentOneWayDirection() int {
+	period := e.strategy.OneWaySwitchMinutes
+	if period <= 0 {
+		period = 30
+	}
+	slot := e.minute / period
+	if slot%2 == 0 {
+		return 1
+	}
+	return -1
+}
+
+func (e *Engine) isOneWaySegment(segID string) bool {
+	for _, id := range e.strategy.OneWaySegments {
+		if id == segID {
+			return true
+		}
+	}
+	return false
+}
+
+func (e *Engine) oneWayAllows(s *model.Ship) bool {
+	if e.strategy.Strategy != StrategyAlternatingOneWay {
+		return true
+	}
+	if s.RouteIdx >= len(s.Route) {
+		return true
+	}
+	curSeg := s.Route[s.RouteIdx]
+	if !e.isOneWaySegment(curSeg) {
+		return true
+	}
+	allowedDir := e.currentOneWayDirection()
+	return s.Direction == allowedDir
+}
+
+func (e *Engine) GetStateHistory(shipID string) []StateChange {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return append([]StateChange(nil), e.stateHist[shipID]...)
+}
+
+func (e *Engine) GetShipDangerousEncounters(shipID string) []TimelineEvent {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	out := []TimelineEvent{}
+	for _, ev := range e.events {
+		if ev.Type == "danger" || ev.Type == "warning" {
+			if ev.ShipA == shipID || ev.ShipB == shipID {
+				out = append(out, ev)
+			}
+		}
+	}
+	return out
 }

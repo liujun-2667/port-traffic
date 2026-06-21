@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { api } from '../api/client'
-import type { Report } from '../api/types'
+import type { Report, RunMeta, SchedulingStrategy } from '../api/types'
+import BaseChart from '../components/BaseChart.vue'
 
 const props = defineProps<{ runId: string | string[] }>()
 const id = computed(() => Number(Array.isArray(props.runId) ? props.runId[0] : props.runId))
@@ -9,6 +10,18 @@ const id = computed(() => Number(Array.isArray(props.runId) ? props.runId[0] : p
 const report = ref<Report | null>(null)
 const error = ref('')
 const loading = ref(true)
+
+const allRuns = ref<RunMeta[]>([])
+const compareRunId = ref<number | null>(null)
+const compareReport = ref<Report | null>(null)
+const compareLoading = ref(false)
+const compareError = ref('')
+
+const STRATEGY_LABEL: Record<SchedulingStrategy, string> = {
+  free_flow: '自由通行',
+  tidal_window: '潮汐窗口调度',
+  alternating_one_way: '单向交替通行'
+}
 
 onMounted(async () => {
   try {
@@ -18,7 +31,29 @@ onMounted(async () => {
   } finally {
     loading.value = false
   }
+  try {
+    allRuns.value = (await api.listRuns()).filter((r) => r.id !== id.value).reverse()
+  } catch {
+    /* ignore */
+  }
 })
+
+async function loadCompareReport() {
+  if (!compareRunId.value) {
+    compareReport.value = null
+    return
+  }
+  compareLoading.value = true
+  compareError.value = ''
+  try {
+    compareReport.value = await api.getReport(compareRunId.value)
+  } catch (e: any) {
+    compareError.value = e.message || String(e)
+    compareReport.value = null
+  } finally {
+    compareLoading.value = false
+  }
+}
 
 const metricRows = computed(() => {
   if (!report.value) return []
@@ -41,6 +76,53 @@ const priorityColor: Record<string, string> = {
   低: 'text-glow-cyan border-glow-cyan/40'
 }
 
+const compareOption = computed(() => {
+  if (!report.value || !compareReport.value) return null
+  const cur = report.value.metrics
+  const cmp = compareReport.value.metrics
+  const curLabel = `Run #${id.value} · ${STRATEGY_LABEL[report.value.summary.strategy?.strategy] || '未知'}`
+  const cmpLabel = `Run #${compareRunId.value} · ${STRATEGY_LABEL[compareReport.value.summary.strategy?.strategy] || '未知'}`
+  return {
+    backgroundColor: 'transparent',
+    tooltip: { trigger: 'axis' },
+    legend: {
+      data: [curLabel, cmpLabel],
+      textStyle: { color: '#94a3b8', fontSize: 11 },
+      top: 0,
+      right: 8
+    },
+    grid: { left: 60, right: 12, top: 36, bottom: 32 },
+    xAxis: {
+      type: 'category',
+      data: ['总吞吐量 (艘)', '平均等待时间 (min)', '危险会遇次数'],
+      axisLabel: { color: '#cbd5e1', fontSize: 11 }
+    },
+    yAxis: {
+      type: 'value',
+      axisLabel: { color: '#64748b', fontSize: 10 },
+      splitLine: { lineStyle: { color: 'rgba(148,163,184,0.1)' } }
+    },
+    series: [
+      {
+        name: curLabel,
+        type: 'bar',
+        data: [cur.totalThroughput, cur.avgWaitMinutes, cur.dangerousEncounters],
+        itemStyle: { color: '#00e5c7' },
+        barWidth: '28%',
+        label: { show: true, position: 'top', color: '#cbd5e1', fontSize: 10, formatter: (p: any) => Number(p.value).toFixed(p.dataIndex === 1 ? 1 : 0) }
+      },
+      {
+        name: cmpLabel,
+        type: 'bar',
+        data: [cmp.totalThroughput, cmp.avgWaitMinutes, cmp.dangerousEncounters],
+        itemStyle: { color: '#ffb547' },
+        barWidth: '28%',
+        label: { show: true, position: 'top', color: '#cbd5e1', fontSize: 10, formatter: (p: any) => Number(p.value).toFixed(p.dataIndex === 1 ? 1 : 0) }
+      }
+    ]
+  }
+})
+
 function exportJSON() {
   if (!report.value) return
   const blob = new Blob([JSON.stringify(report.value, null, 2)], { type: 'application/json' })
@@ -58,7 +140,10 @@ function exportJSON() {
     <header class="flex items-center justify-between">
       <div>
         <h2 class="text-lg font-semibold">仿真评估报告 · RUN #{{ id }}</h2>
-        <p v-if="report" class="text-xs text-slate-500">{{ report.summary.durationMinutes }} 分钟 · 到达率 {{ report.summary.arrivalRate }} 艘/h · 种子 {{ report.summary.seed }} · 风 {{ report.summary.windSpeed }} 节 · 能见度 {{ report.summary.visibility }} 海里</p>
+        <p v-if="report" class="text-xs text-slate-500">
+          {{ report.summary.durationMinutes }} 分钟 · 到达率 {{ report.summary.arrivalRate }} 艘/h · 种子 {{ report.summary.seed }} · 风 {{ report.summary.windSpeed }} 节 · 能见度 {{ report.summary.visibility }} 海里
+          <span v-if="report.summary.strategy" class="ml-2 text-glow-cyan">[{{ STRATEGY_LABEL[report.summary.strategy.strategy] || report.summary.strategy.strategy }}]</span>
+        </p>
       </div>
       <button class="btn" :disabled="!report" @click="exportJSON">导出 JSON</button>
     </header>
@@ -74,6 +159,27 @@ function exportJSON() {
             <div class="text-[10px] uppercase tracking-wider text-slate-500">{{ r.label }}</div>
             <div class="mt-1 font-mono text-lg text-glow-cyan">{{ r.value }}</div>
           </div>
+        </div>
+      </section>
+
+      <section class="panel p-4">
+        <h3 class="panel-title mb-3">策略对比分析</h3>
+        <div class="mb-3 flex flex-wrap items-center gap-3">
+          <div class="flex flex-col">
+            <label class="label">选择对比仿真</label>
+            <select v-model.number="compareRunId" class="input w-64" @change="loadCompareReport">
+              <option :value="null">-- 选择历史仿真记录 --</option>
+              <option v-for="r in allRuns" :key="r.id" :value="r.id">RUN #{{ r.id }} · {{ r.status }} · {{ new Date(r.startedAt).toLocaleString() }}</option>
+            </select>
+          </div>
+          <span v-if="compareLoading" class="text-sm text-glow-amber animate-pulse">加载中…</span>
+          <span v-if="compareError" class="text-sm text-glow-red">{{ compareError }}</span>
+        </div>
+        <div v-if="compareOption" class="h-80">
+          <BaseChart :option="compareOption" height="320px" />
+        </div>
+        <div v-else class="rounded-md border border-dashed border-glow-cyan/20 p-8 text-center text-sm text-slate-500">
+          选择另一个仿真记录进行策略对比,将以并排柱状图展示吞吐量、平均等待时间、危险会遇次数三项指标的差异。
         </div>
       </section>
 
