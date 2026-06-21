@@ -66,6 +66,7 @@ func (s *Server) Router() http.Handler {
 	r.Get("/api/dredging/channels/{segmentId}", s.getSediment)
 	r.Put("/api/dredging/channels/{segmentId}", s.updateSediment)
 	r.Post("/api/dredging/cost-preview", s.costPreview)
+	r.Post("/api/dredging/batches/check-conflicts", s.checkConflicts)
 	r.Post("/api/dredging/batches", s.createBatch)
 	r.Get("/api/dredging/batches", s.listBatches)
 	r.Get("/api/dredging/batches/{batchId}", s.getBatch)
@@ -501,9 +502,14 @@ func (s *Server) costPreview(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
+type createBatchReq struct {
+	dredging.CreateBatchRequest
+	AllowConflict bool `json:"allowConflict"`
+}
+
 func (s *Server) createBatch(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	var req dredging.CreateBatchRequest
+	var req createBatchReq
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -512,12 +518,46 @@ func (s *Server) createBatch(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, fmt.Errorf("dredging service unavailable"))
 		return
 	}
-	b, err := s.dredge.CreateBatch(ctx, &req)
+	b, err := s.dredge.CreateBatch(ctx, &req.CreateBatchRequest, req.AllowConflict)
 	if err != nil {
+		if ce, ok := err.(*dredging.ConflictError); ok {
+			writeJSON(w, http.StatusConflict, ce)
+			return
+		}
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, b)
+}
+
+type checkConflictsReq struct {
+	SegmentIDs            []string `json:"segmentIds"`
+	PlannedStartDate      string   `json:"plannedStartDate"`
+	EstimatedDurationDays int      `json:"estimatedDurationDays"`
+}
+
+func (s *Server) checkConflicts(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	var req checkConflictsReq
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if s.dredge == nil {
+		writeJSON(w, http.StatusServiceUnavailable, fmt.Errorf("dredging service unavailable"))
+		return
+	}
+	startDate, err := time.Parse(time.RFC3339, req.PlannedStartDate)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid plannedStartDate"))
+		return
+	}
+	conflicts, err := s.dredge.CheckConflicts(ctx, req.SegmentIDs, startDate, req.EstimatedDurationDays)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"conflicts": conflicts, "hasConflict": len(conflicts) > 0})
 }
 
 func (s *Server) listBatches(w http.ResponseWriter, r *http.Request) {

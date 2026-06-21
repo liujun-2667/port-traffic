@@ -223,7 +223,7 @@ func (s *Service) ComputeCostPreview(ctx context.Context, segmentIDs []string, t
 }
 
 // CreateBatch schedules a new dredging batch.
-func (s *Service) CreateBatch(ctx context.Context, req *CreateBatchRequest) (*DredgingBatch, error) {
+func (s *Service) CreateBatch(ctx context.Context, req *CreateBatchRequest, allowConflict bool) (*DredgingBatch, error) {
 	if len(req.SegmentIDs) == 0 {
 		return nil, fmt.Errorf("at least one segment required")
 	}
@@ -235,6 +235,26 @@ func (s *Service) CreateBatch(ctx context.Context, req *CreateBatchRequest) (*Dr
 	}
 	if req.Name == "" {
 		return nil, fmt.Errorf("name required")
+	}
+	conflicts, err := s.CheckConflicts(ctx, req.SegmentIDs, req.PlannedStartDate, req.EstimatedDurationDays)
+	if err != nil {
+		return nil, err
+	}
+	if len(conflicts) > 0 {
+		for _, c := range conflicts {
+			if c.Status == BatchOngoing {
+				return nil, &ConflictError{
+					Conflicts: conflicts,
+					Message:   fmt.Sprintf("航道 %s 已存在进行中的批次，无法创建", c.SegmentID),
+				}
+			}
+		}
+		if !allowConflict {
+			return nil, &ConflictError{
+				Conflicts: conflicts,
+				Message:   fmt.Sprintf("检测到 %d 个时间冲突，需用户确认", len(conflicts)),
+			}
+		}
 	}
 	preview, err := s.ComputeCostPreview(ctx, req.SegmentIDs, req.TargetDepth)
 	if err != nil {
@@ -263,6 +283,58 @@ func (s *Service) CreateBatch(ctx context.Context, req *CreateBatchRequest) (*Dr
 	}
 	b.ID = id
 	return b, nil
+}
+
+// CheckConflicts detects overlapping batches for given segments and time range.
+func (s *Service) CheckConflicts(ctx context.Context, segmentIDs []string, startDate time.Time, durationDays int) ([]BatchConflict, error) {
+	allBatches, err := s.repo.ListBatches(ctx)
+	if err != nil {
+		return nil, err
+	}
+	newStart := toDate(startDate)
+	newEnd := newStart.AddDate(0, 0, durationDays)
+	segmentSet := map[string]bool{}
+	for _, sid := range segmentIDs {
+		segmentSet[sid] = true
+	}
+	var conflicts []BatchConflict
+	for _, b := range allBatches {
+		if b.Status == BatchCompleted {
+			continue
+		}
+		existingStart := toDate(b.PlannedStartDate)
+		existingEnd := existingStart.AddDate(0, 0, b.EstimatedDurationDays)
+		for _, seg := range b.Segments {
+			if !segmentSet[seg.SegmentID] {
+				continue
+			}
+			overlapStart := newStart
+			if existingStart.After(overlapStart) {
+				overlapStart = existingStart
+			}
+			overlapEnd := newEnd
+			if existingEnd.Before(overlapEnd) {
+				overlapEnd = existingEnd
+			}
+			if !overlapStart.Before(overlapEnd) {
+				continue
+			}
+			overlapDays := int(overlapEnd.Sub(overlapStart).Hours() / 24)
+			if overlapDays < 0 {
+				overlapDays = 0
+			}
+			conflicts = append(conflicts, BatchConflict{
+				BatchID:       b.ID,
+				BatchName:     b.Name,
+				SegmentID:     seg.SegmentID,
+				OverlapDays:   overlapDays,
+				ExistingStart: existingStart,
+				ExistingEnd:   existingEnd,
+				Status:        b.Status,
+			})
+		}
+	}
+	return conflicts, nil
 }
 
 // ListBatches returns all batches.

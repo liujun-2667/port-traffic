@@ -2,13 +2,18 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { api } from '../api/client'
 import type {
+  BatchConflict,
   BatchStatus,
   ChannelStatus,
+  ConflictError,
   CostPreview,
   DredgingBatch,
   OptimizeResult,
   SedimentStatus
 } from '../api/types'
+import GanttChart from '../components/GanttChart.vue'
+import DepthSparkline from '../components/DepthSparkline.vue'
+import DepthTrendModal from '../components/DepthTrendModal.vue'
 
 const channels = ref<ChannelStatus[]>([])
 const batches = ref<DredgingBatch[]>([])
@@ -28,6 +33,14 @@ const budget = ref<number>(5000)
 const optimizeResult = ref<OptimizeResult | null>(null)
 const optimizing = ref(false)
 
+// Conflict detection
+const conflictDialogVisible = ref(false)
+const pendingConflicts = ref<BatchConflict[]>([])
+
+// Depth trend modal
+const trendModalVisible = ref(false)
+const selectedChannel = ref<ChannelStatus | null>(null)
+
 const STATUS_LABEL: Record<SedimentStatus, { label: string; cls: string }> = {
   normal:       { label: '正常',      cls: 'bg-emerald-500/20 text-emerald-300 border-emerald-400/40' },
   warning:      { label: '预警',      cls: 'bg-amber-500/20 text-amber-300 border-amber-400/40' },
@@ -40,13 +53,37 @@ const BATCH_STATUS_LABEL: Record<BatchStatus, { label: string; cls: string }> = 
   completed: { label: '已完成', cls: 'bg-slate-500/30 text-slate-300 border-slate-400/40' }
 }
 
+// ---- Batch progress tracking ----
+function getBatchProgress(b: DredgingBatch): { percent: number; remainingDays: number; isOverdue: boolean; overdueDays: number } {
+  if (b.status !== 'ongoing') {
+    return { percent: 0, remainingDays: 0, isOverdue: false, overdueDays: 0 }
+  }
+  const start = new Date(b.actualStartDate || b.plannedStartDate)
+  start.setHours(0, 0, 0, 0)
+  const now = new Date()
+  now.setHours(0, 0, 0, 0)
+  const end = new Date(start)
+  end.setDate(end.getDate() + b.estimatedDurationDays)
+
+  const elapsedMs = now.getTime() - start.getTime()
+  const totalMs = end.getTime() - start.getTime()
+  let percent = totalMs > 0 ? (elapsedMs / totalMs) * 100 : 0
+  percent = Math.max(0, Math.min(100, percent))
+
+  const remainingMs = end.getTime() - now.getTime()
+  const remainingDays = remainingMs > 0 ? Math.ceil(remainingMs / (1000 * 60 * 60 * 24)) : 0
+  const isOverdue = remainingMs < 0
+  const overdueDays = isOverdue ? Math.ceil(-remainingMs / (1000 * 60 * 60 * 24)) : 0
+
+  return { percent: Math.round(percent), remainingDays, isOverdue, overdueDays }
+}
+
 // ---- Friendly error mapping ----
 function friendlyError(e: any, fallback: string): string {
   const status: number | undefined = e?.status
   const raw: string | undefined = e?.raw
   const msg: string = (e?.message ?? '').toString().trim()
 
-  // 简短/可读的后端 message 直接用
   if (msg && msg.length <= 60 && !msg.startsWith('{') && !msg.includes('SQLSTATE') && !msg.includes('ERROR:')) {
     return msg
   }
@@ -59,14 +96,22 @@ function friendlyError(e: any, fallback: string): string {
       return '没有操作权限，请重新登录或联系管理员'
     case 404:
       return '请求的资源不存在，可能已被删除'
-    case 409:
-      return '操作冲突，请刷新数据后重试'
+    case 409: {
+      try {
+        const data = JSON.parse(raw || '{}')
+        if (data?.conflicts?.length > 0) {
+          return `疏浚时间冲突：${data.conflicts.length} 个批次与当前计划重叠`
+        }
+        return data?.message || '操作冲突，请刷新数据后重试'
+      } catch {
+        return '操作冲突，请刷新数据后重试'
+      }
+    }
     case 500:
     case 502:
     case 503:
       return '服务器错误，请稍后再试；若持续出现请联系技术支持'
   }
-  // 未识别的网络错误 / 未提供 status
   if (raw && (raw.includes('SQLSTATE') || raw.includes('ERROR:'))) {
     return '服务器数据操作异常，请稍后再试或联系技术支持'
   }
@@ -121,7 +166,8 @@ async function refreshPreview() {
 
 watch([selectedIds, targetDepth], refreshPreview, { deep: true })
 
-async function createBatch() {
+// ---- Conflict-aware batch creation ----
+async function tryCreateBatch(allowConflict = false) {
   if (!batchName.value.trim()) {
     error.value = '请输入批次名称'
     return
@@ -130,6 +176,29 @@ async function createBatch() {
     error.value = '请至少选择一条航道'
     return
   }
+
+  if (!allowConflict) {
+    try {
+      const checkResult = await api.checkConflicts(
+        selectedIds.value,
+        new Date(startDate.value).toISOString(),
+        durationDays.value
+      )
+      if (checkResult.hasConflict) {
+        const hasOngoing = checkResult.conflicts.some(c => c.status === 'ongoing')
+        if (hasOngoing) {
+          error.value = `存在进行中的批次冲突，无法创建。请检查航道 ${checkResult.conflicts.find(c => c.status === 'ongoing')?.segmentId || ''}`
+          return
+        }
+        pendingConflicts.value = checkResult.conflicts
+        conflictDialogVisible.value = true
+        return
+      }
+    } catch (e: any) {
+      // If conflict check fails, proceed anyway and let backend handle it
+    }
+  }
+
   saving.value = true
   error.value = ''
   try {
@@ -139,18 +208,50 @@ async function createBatch() {
       plannedStartDate: new Date(startDate.value).toISOString(),
       estimatedDurationDays: durationDays.value,
       targetDepth: targetDepth.value,
-      notes: notes.value.trim()
+      notes: notes.value.trim(),
+      allowConflict: true
     })
     batchName.value = ''
     selectedIds.value = []
     notes.value = ''
     costPreview.value = null
+    conflictDialogVisible.value = false
+    pendingConflicts.value = []
     await loadAll()
   } catch (e: any) {
+    if (e?.status === 409) {
+      try {
+        const data = JSON.parse(e?.raw || '{}') as ConflictError
+        if (data?.conflicts?.length > 0) {
+          pendingConflicts.value = data.conflicts
+          const hasOngoing = data.conflicts.some(c => c.status === 'ongoing')
+          if (!hasOngoing) {
+            conflictDialogVisible.value = true
+          }
+        }
+      } catch {
+        // ignore parse error
+      }
+    }
     error.value = friendlyError(e, '创建疏浚批次失败，请稍后再试')
   } finally {
     saving.value = false
   }
+}
+
+function cancelConflictDialog() {
+  conflictDialogVisible.value = false
+  pendingConflicts.value = []
+}
+
+function confirmConflictCreate() {
+  tryCreateBatch(true)
+}
+
+// ---- Sparkline click ----
+function openTrendModal(channel: ChannelStatus) {
+  selectedChannel.value = channel
+  trendModalVisible.value = true
 }
 
 async function startBatch(id: number) {
@@ -205,6 +306,10 @@ function fmtDate(s: string) {
   return d.toLocaleDateString('zh-CN')
 }
 
+function fmtConflictDate(s: string) {
+  return new Date(s).toLocaleDateString('zh-CN')
+}
+
 function dismissError() {
   error.value = ''
 }
@@ -245,7 +350,7 @@ onMounted(() => {
     </div>
 
     <div class="grid min-h-0 flex-1 grid-cols-12 gap-3">
-      <!-- LEFT: Channel list -->
+      <!-- LEFT: Channel list with sparklines -->
       <div class="col-span-5 flex min-h-0 flex-col rounded-lg border border-slate-700/60 bg-navy-950/60">
         <div class="flex items-center justify-between border-b border-slate-700/50 px-3 py-2">
           <div class="text-sm font-medium text-slate-200">航道淤积状态</div>
@@ -269,6 +374,7 @@ onMounted(() => {
                 <th class="px-2 py-2 text-right">衰减率</th>
                 <th class="px-2 py-2 text-right">剩余天数</th>
                 <th class="px-2 py-2">状态</th>
+                <th class="px-2 py-2 text-center">淤积趋势</th>
               </tr>
             </thead>
             <tbody>
@@ -300,115 +406,108 @@ onMounted(() => {
                     {{ STATUS_LABEL[c.status].label }}
                   </span>
                 </td>
+                <td class="px-2 py-2 text-center" @click.stop>
+                  <div class="flex justify-center">
+                    <DepthSparkline
+                      :channel="c"
+                      :width="120"
+                      :height="28"
+                      @click="openTrendModal(c)"
+                    />
+                  </div>
+                </td>
               </tr>
               <tr v-if="loading && channels.length === 0">
-                <td colspan="7" class="px-4 py-10 text-center text-slate-500">正在加载航道状态...</td>
+                <td colspan="8" class="px-4 py-10 text-center text-slate-500">正在加载航道状态...</td>
               </tr>
               <tr v-else-if="channels.length === 0">
-                <td colspan="7" class="px-4 py-10 text-center text-slate-500">暂无数据</td>
+                <td colspan="8" class="px-4 py-10 text-center text-slate-500">暂无数据</td>
               </tr>
             </tbody>
           </table>
         </div>
       </div>
 
-      <!-- RIGHT: Batch editor + batch list + optimizer -->
+      <!-- RIGHT: Batch editor + gantt + batch list + optimizer -->
       <div class="col-span-7 flex min-h-0 flex-col gap-3">
-        <!-- Create batch -->
-        <div class="rounded-lg border border-slate-700/60 bg-navy-950/60">
-          <div class="border-b border-slate-700/50 px-3 py-2 text-sm font-medium text-slate-200">
-            创建疏浚批次 <span class="ml-2 text-xs text-slate-500">已选 {{ selectedCount }} 条航道</span>
-          </div>
-          <div class="grid grid-cols-12 gap-3 p-3">
-            <div class="col-span-6">
-              <label class="mb-1 block text-xs text-slate-400">批次名称</label>
-              <input
-                v-model="batchName"
-                type="text"
-                placeholder="例: 2026-Q3 主航道维护"
-                class="w-full rounded-md border border-slate-700 bg-navy-900 px-2.5 py-1.5 text-sm text-slate-100 outline-none focus:border-glow-cyan/60"
-              />
+        <div class="grid grid-cols-2 gap-3">
+          <!-- Create batch -->
+          <div class="rounded-lg border border-slate-700/60 bg-navy-950/60">
+            <div class="border-b border-slate-700/50 px-3 py-2 text-sm font-medium text-slate-200">
+              创建疏浚批次 <span class="ml-2 text-xs text-slate-500">已选 {{ selectedCount }} 条航道</span>
             </div>
-            <div class="col-span-3">
-              <label class="mb-1 block text-xs text-slate-400">计划开始日期</label>
-              <input
-                v-model="startDate"
-                type="date"
-                class="w-full rounded-md border border-slate-700 bg-navy-900 px-2.5 py-1.5 text-sm text-slate-100 outline-none focus:border-glow-cyan/60"
-              />
-            </div>
-            <div class="col-span-3">
-              <label class="mb-1 block text-xs text-slate-400">预计工期(天)</label>
-              <input
-                v-model.number="durationDays"
-                type="number"
-                min="1"
-                class="w-full rounded-md border border-slate-700 bg-navy-900 px-2.5 py-1.5 text-sm text-slate-100 outline-none focus:border-glow-cyan/60"
-              />
-            </div>
-            <div class="col-span-6">
-              <label class="mb-1 block text-xs text-slate-400">疏浚目标水深(米)</label>
-              <input
-                v-model.number="targetDepth"
-                type="number"
-                step="0.1"
-                min="0"
-                class="w-full rounded-md border border-slate-700 bg-navy-900 px-2.5 py-1.5 text-sm text-slate-100 outline-none focus:border-glow-cyan/60"
-              />
-            </div>
-            <div class="col-span-6">
-              <label class="mb-1 block text-xs text-slate-400">备注</label>
-              <input
-                v-model="notes"
-                type="text"
-                placeholder="选填"
-                class="w-full rounded-md border border-slate-700 bg-navy-900 px-2.5 py-1.5 text-sm text-slate-100 outline-none focus:border-glow-cyan/60"
-              />
-            </div>
-          </div>
-
-          <div v-if="costPreview" class="border-t border-slate-700/50 bg-navy-900/40 px-3 py-2">
-            <div class="mb-2 flex items-end justify-between">
-              <div class="text-xs text-slate-400">成本预览</div>
-              <div class="text-lg font-semibold text-amber-300">
-                总计 <span class="font-mono">¥{{ costPreview.totalCost.toFixed(2) }}</span>
-                <span class="ml-1 text-xs text-slate-400">万元</span>
+            <div class="grid grid-cols-12 gap-2 p-3">
+              <div class="col-span-12">
+                <label class="mb-1 block text-xs text-slate-400">批次名称</label>
+                <input
+                  v-model="batchName"
+                  type="text"
+                  placeholder="例: 2026-Q3 主航道维护"
+                  class="w-full rounded-md border border-slate-700 bg-navy-900 px-2.5 py-1.5 text-sm text-slate-100 outline-none focus:border-glow-cyan/60"
+                />
+              </div>
+              <div class="col-span-6">
+                <label class="mb-1 block text-xs text-slate-400">计划开始日期</label>
+                <input
+                  v-model="startDate"
+                  type="date"
+                  class="w-full rounded-md border border-slate-700 bg-navy-900 px-2.5 py-1.5 text-sm text-slate-100 outline-none focus:border-glow-cyan/60"
+                />
+              </div>
+              <div class="col-span-6">
+                <label class="mb-1 block text-xs text-slate-400">预计工期(天)</label>
+                <input
+                  v-model.number="durationDays"
+                  type="number"
+                  min="1"
+                  class="w-full rounded-md border border-slate-700 bg-navy-900 px-2.5 py-1.5 text-sm text-slate-100 outline-none focus:border-glow-cyan/60"
+                />
+              </div>
+              <div class="col-span-6">
+                <label class="mb-1 block text-xs text-slate-400">疏浚目标水深(米)</label>
+                <input
+                  v-model.number="targetDepth"
+                  type="number"
+                  step="0.1"
+                  min="0"
+                  class="w-full rounded-md border border-slate-700 bg-navy-900 px-2.5 py-1.5 text-sm text-slate-100 outline-none focus:border-glow-cyan/60"
+                />
+              </div>
+              <div class="col-span-6">
+                <label class="mb-1 block text-xs text-slate-400">备注</label>
+                <input
+                  v-model="notes"
+                  type="text"
+                  placeholder="选填"
+                  class="w-full rounded-md border border-slate-700 bg-navy-900 px-2.5 py-1.5 text-sm text-slate-100 outline-none focus:border-glow-cyan/60"
+                />
               </div>
             </div>
-            <table class="w-full text-xs">
-              <thead class="text-slate-500">
-                <tr>
-                  <th class="px-2 py-1 text-left">航道</th>
-                  <th class="px-2 py-1 text-right">当前→目标(m)</th>
-                  <th class="px-2 py-1 text-right">加深量(m)</th>
-                  <th class="px-2 py-1 text-right">长度(km)</th>
-                  <th class="px-2 py-1 text-right">单位成本</th>
-                  <th class="px-2 py-1 text-right">小计(万元)</th>
-                </tr>
-              </thead>
-              <tbody class="text-slate-300">
-                <tr v-for="it in costPreview.perSegment" :key="it.segmentId" class="border-t border-slate-800/50">
-                  <td class="px-2 py-1 font-mono text-slate-200">{{ it.segmentId }}</td>
-                  <td class="px-2 py-1 text-right font-mono">{{ it.currentDepth.toFixed(2) }} → {{ it.targetDepth.toFixed(2) }}</td>
-                  <td class="px-2 py-1 text-right font-mono text-emerald-300">+{{ it.depthIncrease.toFixed(2) }}</td>
-                  <td class="px-2 py-1 text-right font-mono">{{ it.lengthKm.toFixed(2) }}</td>
-                  <td class="px-2 py-1 text-right font-mono">{{ it.unitCost.toFixed(2) }}</td>
-                  <td class="px-2 py-1 text-right font-mono text-amber-300">{{ it.cost.toFixed(2) }}</td>
-                </tr>
-              </tbody>
-            </table>
+
+            <div v-if="costPreview" class="border-t border-slate-700/50 bg-navy-900/40 px-3 py-2">
+              <div class="mb-1 flex items-end justify-between">
+                <div class="text-xs text-slate-400">成本预览</div>
+                <div class="text-sm font-semibold text-amber-300">
+                  总计 <span class="font-mono">¥{{ costPreview.totalCost.toFixed(2) }}</span>
+                  <span class="ml-1 text-[10px] text-slate-400">万元</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="border-t border-slate-700/50 px-3 py-2 text-right">
+              <button
+                :disabled="saving || selectedCount === 0 || !batchName.trim()"
+                class="rounded-md bg-glow-cyan/80 px-4 py-1.5 text-sm font-medium text-navy-950 shadow transition hover:bg-glow-cyan disabled:cursor-not-allowed disabled:opacity-40"
+                @click="tryCreateBatch(false)"
+              >{{ saving ? '创建中...' : '创建批次' }}</button>
+            </div>
           </div>
 
-          <div class="border-t border-slate-700/50 px-3 py-2 text-right">
-            <button
-              :disabled="saving || selectedCount === 0 || !batchName.trim()"
-              class="rounded-md bg-glow-cyan/80 px-4 py-1.5 text-sm font-medium text-navy-950 shadow transition hover:bg-glow-cyan disabled:cursor-not-allowed disabled:opacity-40"
-              @click="createBatch"
-            >{{ saving ? '创建中...' : '创建批次' }}</button>
-          </div>
+          <!-- Gantt chart -->
+          <GanttChart :batches="batches" :channels="channels" class="h-[260px]" />
         </div>
 
-        <!-- History batches -->
+        <!-- History batches with progress -->
         <div class="flex min-h-0 flex-1 flex-col rounded-lg border border-slate-700/60 bg-navy-950/60">
           <div class="border-b border-slate-700/50 px-3 py-2 text-sm font-medium text-slate-200">历史疏浚批次</div>
           <div class="min-h-0 flex-1 overflow-auto">
@@ -420,6 +519,7 @@ onMounted(() => {
                   <th class="px-2 py-2">状态</th>
                   <th class="px-2 py-2 text-right">开始</th>
                   <th class="px-2 py-2 text-right">工期</th>
+                  <th class="px-2 py-2 text-right">进度</th>
                   <th class="px-2 py-2 text-right">目标水深</th>
                   <th class="px-2 py-2 text-right">费用</th>
                   <th class="px-2 py-2">航道</th>
@@ -437,6 +537,31 @@ onMounted(() => {
                   </td>
                   <td class="px-2 py-2 text-right font-mono">{{ fmtDate(b.plannedStartDate) }}</td>
                   <td class="px-2 py-2 text-right font-mono">{{ b.estimatedDurationDays }}天</td>
+                  <td class="px-2 py-2">
+                    <template v-if="b.status === 'ongoing'">
+                      <div class="flex items-center gap-2">
+                        <div class="relative h-2 w-24 overflow-hidden rounded-full bg-slate-700/60">
+                          <div
+                            class="h-full rounded-full transition-all"
+                            :class="getBatchProgress(b).isOverdue ? 'bg-rose-500' : 'bg-emerald-500'"
+                            :style="{ width: getBatchProgress(b).percent + '%' }"
+                          ></div>
+                        </div>
+                        <span
+                          class="font-mono text-[10px]"
+                          :class="getBatchProgress(b).isOverdue ? 'text-rose-400' : 'text-slate-400'"
+                        >
+                          <template v-if="getBatchProgress(b).isOverdue">
+                            已超期 {{ getBatchProgress(b).overdueDays }} 天
+                          </template>
+                          <template v-else>
+                            {{ getBatchProgress(b).percent }}% · 剩 {{ getBatchProgress(b).remainingDays }} 天
+                          </template>
+                        </span>
+                      </div>
+                    </template>
+                    <span v-else class="text-slate-600">—</span>
+                  </td>
                   <td class="px-2 py-2 text-right font-mono">{{ b.targetDepth.toFixed(2) }}m</td>
                   <td class="px-2 py-2 text-right font-mono text-amber-300">¥{{ b.totalCost.toFixed(1) }}</td>
                   <td class="px-2 py-2 font-mono text-slate-400">
@@ -463,7 +588,7 @@ onMounted(() => {
                   </td>
                 </tr>
                 <tr v-if="batches.length === 0">
-                  <td colspan="9" class="px-4 py-8 text-center text-slate-500">暂无批次记录</td>
+                  <td colspan="10" class="px-4 py-8 text-center text-slate-500">暂无批次记录</td>
                 </tr>
               </tbody>
             </table>
@@ -539,5 +664,74 @@ onMounted(() => {
         </div>
       </div>
     </div>
+
+    <!-- Conflict Confirmation Dialog -->
+    <Teleport to="body">
+      <div
+        v-if="conflictDialogVisible"
+        class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+        @click.self="cancelConflictDialog"
+      >
+        <div class="flex w-[520px] max-w-[90vw] flex-col rounded-lg border border-amber-500/40 bg-navy-950 shadow-2xl">
+          <div class="flex items-center justify-between border-b border-slate-700/50 px-4 py-3">
+            <div class="flex items-center gap-2">
+              <span class="text-lg text-amber-400">⚠</span>
+              <h3 class="text-sm font-semibold text-amber-300">疏浚时间冲突警告</h3>
+            </div>
+            <button
+              class="rounded px-2 py-1 text-slate-400 hover:bg-slate-700/40 hover:text-slate-200"
+              @click="cancelConflictDialog"
+            >✕</button>
+          </div>
+
+          <div class="px-4 py-3">
+            <p class="mb-3 text-sm text-slate-300">
+              以下批次与当前创建计划的时间段存在重叠，是否仍要创建？
+            </p>
+            <div class="max-h-[240px] overflow-auto rounded-md border border-slate-700/50 bg-navy-900/40">
+              <table class="w-full text-[11px]">
+                <thead class="bg-navy-900/80 text-slate-400">
+                  <tr>
+                    <th class="px-2 py-1.5 text-left">批次名称</th>
+                    <th class="px-2 py-1.5 text-left">航道</th>
+                    <th class="px-2 py-1.5 text-left">已有时间范围</th>
+                    <th class="px-2 py-1.5 text-right">重叠天数</th>
+                  </tr>
+                </thead>
+                <tbody class="text-slate-300">
+                  <tr v-for="(c, i) in pendingConflicts" :key="i" class="border-t border-slate-800/50">
+                    <td class="px-2 py-1.5 text-slate-200">{{ c.batchName }}</td>
+                    <td class="px-2 py-1.5 font-mono">{{ c.segmentId }}</td>
+                    <td class="px-2 py-1.5 font-mono text-slate-400">
+                      {{ fmtConflictDate(c.existingStart) }} ~ {{ fmtConflictDate(c.existingEnd) }}
+                    </td>
+                    <td class="px-2 py-1.5 text-right font-mono text-amber-400">{{ c.overlapDays }} 天</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="flex justify-end gap-2 border-t border-slate-700/50 px-4 py-3">
+            <button
+              class="rounded-md border border-slate-600/60 bg-navy-900/60 px-4 py-1.5 text-sm text-slate-300 hover:bg-slate-700/40"
+              @click="cancelConflictDialog"
+            >取消</button>
+            <button
+              class="rounded-md bg-amber-500/80 px-4 py-1.5 text-sm font-medium text-navy-950 shadow transition hover:bg-amber-500"
+              @click="confirmConflictCreate"
+            >仍要创建</button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- Depth Trend Modal -->
+    <DepthTrendModal
+      :visible="trendModalVisible"
+      :channel="selectedChannel"
+      :batches="batches"
+      @close="trendModalVisible = false"
+    />
   </div>
 </template>

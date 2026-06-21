@@ -1,7 +1,9 @@
 import type {
   AppConfig,
+  BatchConflict,
   ChannelSediment,
   ChannelStatus,
+  ConflictCheckResult,
   CostPreview,
   CreateBatchRequest,
   DredgingBatch,
@@ -108,6 +110,11 @@ export const api = {
     req<CostPreview>('/dredging/cost-preview', {
       method: 'POST',
       body: JSON.stringify({ segmentIds, targetDepth })
+    }),
+  checkConflicts: (segmentIds: string[], plannedStartDate: string, estimatedDurationDays: number) =>
+    req<ConflictCheckResult>('/dredging/batches/check-conflicts', {
+      method: 'POST',
+      body: JSON.stringify({ segmentIds, plannedStartDate, estimatedDurationDays })
     }),
   createBatch: (body: CreateBatchRequest) =>
     req<DredgingBatch>('/dredging/batches', {

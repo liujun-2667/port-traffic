@@ -451,4 +451,25 @@ export interface CreateBatchRequest {
   estimatedDurationDays: number
   targetDepth: number
   notes?: string
+  allowConflict?: boolean
+}
+
+export interface BatchConflict {
+  batchId: number
+  batchName: string
+  segmentId: string
+  overlapDays: number
+  existingStart: string
+  existingEnd: string
+  status: BatchStatus
+}
+
+export interface ConflictCheckResult {
+  conflicts: BatchConflict[]
+  hasConflict: boolean
+}
+
+export interface ConflictError {
+  conflicts: BatchConflict[]
+  message: string
 }

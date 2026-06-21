@@ -129,3 +129,24 @@ type UpdateSedimentRequest struct {
 	UnitDredgingCost *float64   `json:"unitDredgingCost,omitempty"`
 	RestrictedDraft  *float64   `json:"restrictedDraft,omitempty"`
 }
+
+// BatchConflict describes an overlapping batch for conflict detection.
+type BatchConflict struct {
+	BatchID      int64  `json:"batchId"`
+	BatchName    string `json:"batchName"`
+	SegmentID    string `json:"segmentId"`
+	OverlapDays  int    `json:"overlapDays"`
+	ExistingStart time.Time `json:"existingStart"`
+	ExistingEnd   time.Time `json:"existingEnd"`
+	Status       BatchStatus `json:"status"`
+}
+
+// ConflictError is returned when batch scheduling conflicts are detected.
+type ConflictError struct {
+	Conflicts []BatchConflict `json:"conflicts"`
+	Message   string          `json:"message"`
+}
+
+func (e *ConflictError) Error() string {
+	return e.Message
+}
