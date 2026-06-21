@@ -119,7 +119,7 @@ async function setRate(v: number) {
 
     <div class="ml-auto flex items-center gap-2 text-xs font-mono">
       <span v-if="store.runId" class="text-slate-400">RUN #{{ store.runId }}</span>
-      <span v-if="store.frame?.strategy" class="text-glow-cyan/70">[{{ strategies.find(s => s.value === store.frame.strategy.strategy)?.label }}]</span>
+      <span v-if="store.frame?.strategy" class="text-glow-cyan/70">[{{ strategies.find(s => s.value === store.frame?.strategy?.strategy)?.label }}]</span>
       <span v-if="store.connecting" class="text-glow-amber animate-pulse">连接中…</span>
       <span v-else-if="store.done" class="text-glow-cyan">已完成</span>
       <span v-else-if="store.playing" class="text-glow-cyan animate-pulse">● LIVE</span>

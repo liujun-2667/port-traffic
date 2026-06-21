@@ -103,7 +103,9 @@ const replayFrame = computed<Frame | null>(() => {
     tideLevel: 0,
     navigableDepth: 0,
     berths: cfg.port.berths.map((b) => ({ id: b.id, type: b.type, occupied: false, shipId: '' })),
-    anchorage: { id: cfg.port.anchorages[0]?.id ?? '', count: 0, capacity: cfg.port.anchorages[0]?.capacity ?? 0 }
+    anchorage: { id: cfg.port.anchorages[0]?.id ?? '', count: 0, capacity: cfg.port.anchorages[0]?.capacity ?? 0 },
+    events: [],
+    strategy: { strategy: 'free_flow', tidalThresholdMeters: 0, oneWaySwitchMinutes: 30, oneWaySegments: [] }
   }
 })
 
