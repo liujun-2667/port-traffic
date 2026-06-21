@@ -49,15 +49,6 @@ type runState struct {
 	subs   []chan sim.Frame
 }
 
-// NewManager creates a Manager.
-func NewManager(cfg *config.Service, st store.Store) *Manager {
-	m := &Manager{runs: map[int64]*runState{}, cfg: cfg, store: st}
-	// Seed the counter with a value that won't collide with DB BIGSERIAL (starts at 1).
-	// Use time offset + monotonic counter; keep values well below 2^53 for JS Number safety.
-	m.nextID.Store(1_000_000_000 + time.Now().Unix()%1_000_000_000)
-	return m
-}
-
 // StartRun creates a run, persists it (if store available) and starts stepping.
 func (m *Manager) StartRun(p sim.Params) (int64, error) {
 	cfg := m.cfg.Get()
