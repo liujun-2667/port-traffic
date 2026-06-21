@@ -69,8 +69,8 @@ export const api = {
 }
 
 // Subscribe to the SSE frame stream for a run. Returns an unsubscribe function.
-export function streamRun(runId: number, onFrame: (f: Frame) => void, onError?: (e: Event) => void) {
-  const es = new EventSource(`${BASE}/sim/${runId}/stream`)
+export function streamRun(runId: number, onFrame: (f: Frame) => void, onError?: (msg: string) => void) {
+  const es = new EventSource(`${BASE}/sim/${runId}/stream`, { withCredentials: false })
   es.addEventListener('frame', (ev) => {
     try {
       onFrame(JSON.parse((ev as MessageEvent).data))
@@ -78,9 +78,21 @@ export function streamRun(runId: number, onFrame: (f: Frame) => void, onError?: 
       /* ignore malformed frame */
     }
   })
-  es.onerror = (e) => {
-    if (onError) onError(e)
+  es.addEventListener('error', (ev) => {
+    // Protocol (our custom) error payload from the server — close the source cleanly.
+    const msg = (ev as MessageEvent).data
+    if (typeof msg === 'string' && msg.length > 0) {
+      if (onError) onError(msg)
+    }
     es.close()
+    // If the event came with no data, the connection broke: surface generic message.
+    if (!msg || typeof msg !== 'string') {
+      if (onError) onError('SSE connection closed')
+    }
+  })
+  es.onerror = () => {
+    es.close()
+    if (onError) onError('SSE connection failed')
   }
   return () => es.close()
 }

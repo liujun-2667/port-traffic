@@ -23,7 +23,7 @@ const activeRate = ref(1)
 
 async function start() {
   activeRate.value = 1
-  await store.startRun({ ...params, speedFactor: 1 })
+  await store.startRun({ ...params, speedFactor: activeRate.value })
 }
 async function setRate(v: number) {
   activeRate.value = v

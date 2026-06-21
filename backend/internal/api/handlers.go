@@ -36,8 +36,9 @@ func (s *Server) Router() http.Handler {
 	r := chi.NewRouter()
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   []string{"*"},
-		AllowedMethods:   []string{"GET", "POST", "PUT", "OPTIONS"},
-		AllowedHeaders:   []string{"*"},
+		AllowedMethods:   []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
+		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-Requested-With", "Last-Event-ID"},
+		ExposedHeaders:   []string{"Content-Type", "X-Request-Id"},
 		AllowCredentials: false,
 		MaxAge:           300,
 	}))
@@ -151,16 +152,29 @@ func (s *Server) streamRun(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+
+	// Always respond with SSE 200 so browser EventSource won't churn reconnects.
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache, no-transform")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+	flusher, _ := w.(http.Flusher)
+	// send initial \n to flush headers through intermediaries
+	fmt.Fprint(w, "\n\n")
+	if flusher != nil {
+		flusher.Flush()
+	}
+
 	ch, ok := s.mgr.Subscribe(id)
 	if !ok {
-		writeError(w, http.StatusNotFound, fmt.Errorf("run not found"))
+		fmt.Fprintf(w, "event: error\ndata: %s\n\n", escapeJSON("run not found"))
+		if flusher != nil {
+			flusher.Flush()
+		}
 		return
 	}
 	defer s.mgr.Unsubscribe(id, ch)
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	flusher, _ := w.(http.Flusher)
+
 	ctx := r.Context()
 	for {
 		select {
@@ -180,6 +194,12 @@ func (s *Server) streamRun(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+}
+
+// escapeJSON wraps a plain string so it's safe to embed as a JSON value token.
+func escapeJSON(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
 }
 
 type singleReq struct {

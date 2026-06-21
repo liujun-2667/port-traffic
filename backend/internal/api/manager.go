@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"port-traffic/internal/config"
@@ -12,10 +13,11 @@ import (
 
 // Manager owns live simulation runs and streams frames to subscribers.
 type Manager struct {
-	mu    sync.Mutex
-	runs  map[int64]*runState
-	cfg   *config.Service
-	store store.Store
+	mu     sync.Mutex
+	runs   map[int64]*runState
+	cfg    *config.Service
+	store  store.Store
+	nextID atomic.Int64
 }
 
 type runState struct {
@@ -33,7 +35,11 @@ type runState struct {
 
 // NewManager creates a Manager.
 func NewManager(cfg *config.Service, st store.Store) *Manager {
-	return &Manager{runs: map[int64]*runState{}, cfg: cfg, store: st}
+	m := &Manager{runs: map[int64]*runState{}, cfg: cfg, store: st}
+	// Seed the counter with a value that won't collide with DB BIGSERIAL (starts at 1).
+	// Use time offset + monotonic counter; keep values well below 2^53 for JS Number safety.
+	m.nextID.Store(1_000_000_000 + time.Now().Unix()%1_000_000_000)
+	return m
 }
 
 // StartRun creates a run, persists it (if store available) and starts stepping.
@@ -41,17 +47,30 @@ func (m *Manager) StartRun(p sim.Params) (int64, error) {
 	cfg := m.cfg.Get()
 	engine := sim.NewEngine(cfg, p)
 
-	var id int64 = time.Now().UnixNano()
 	paramsJSON, _ := json.Marshal(p)
+	id := m.nextID.Add(1) // JS-safe: well below 2^53
 	if m.store != nil {
-		rid, err := m.store.SaveRun(paramsJSON, cfg.Sim.DurationHours*60)
-		if err == nil {
+		if rid, err := m.store.SaveRun(paramsJSON, cfg.Sim.DurationHours*60); err == nil && rid > 0 {
 			id = rid
 		}
 	}
 	r := &runState{
 		id: id, engine: engine, params: p,
 		rate: 1, cancel: make(chan struct{}),
+	}
+	// Translate float speedFactor from Params to the discrete playback rates.
+	switch {
+	case p.SpeedFactor <= 0:
+		r.rate = 0 // "fastest"
+	case p.SpeedFactor >= 20:
+		r.rate = 20
+	case p.SpeedFactor >= 5:
+		r.rate = 5
+	default:
+		r.rate = int(p.SpeedFactor + 0.5)
+		if r.rate < 1 {
+			r.rate = 1
+		}
 	}
 	m.mu.Lock()
 	m.runs[id] = r
@@ -100,7 +119,7 @@ func stepDelay(rate int) time.Duration {
 		return 140 * time.Millisecond
 	case 20:
 		return 35 * time.Millisecond
-	default:
+	default: // 0 or anything else -> fastest
 		return 2 * time.Millisecond
 	}
 }
@@ -183,7 +202,9 @@ func (m *Manager) Control(id int64, action string, rate int) bool {
 		r.mu.Unlock()
 	case "set_rate":
 		r.mu.Lock()
-		if rate > 0 {
+		if rate <= 0 {
+			r.rate = 0 // 0 means "fastest"
+		} else {
 			r.rate = rate
 		}
 		r.mu.Unlock()
